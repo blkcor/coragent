@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/blkcor/coragent/pkg/agent"
+	"github.com/blkcor/coragent/internal/core"
 )
 
 func TestOpenAIProvider_StreamText(t *testing.T) {
@@ -25,18 +25,18 @@ func TestOpenAIProvider_StreamText(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(server.URL, "test-key", "gpt-4")
-	conv := agent.Conversation{
-		Turns: []agent.Turn{
+	conv := core.Conversation{
+		Turns: []core.Turn{
 			{Role: "user", Content: "Hi"},
 		},
 	}
 
-	events := provider.StreamReply(context.Background(), conv, nil, agent.StreamOptions{})
+	events := provider.StreamReply(context.Background(), conv, nil, core.StreamOptions{})
 
 	// Collect text deltas
 	var text string
 	for event := range events {
-		if event.Type == agent.TextDelta {
+		if event.Type == core.TextDelta {
 			text += event.TextDelta
 		}
 	}
@@ -61,18 +61,18 @@ func TestOpenAIProvider_StreamToolCalls(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(server.URL, "test-key", "gpt-4")
-	conv := agent.Conversation{
-		Turns: []agent.Turn{
+	conv := core.Conversation{
+		Turns: []core.Turn{
 			{Role: "user", Content: "Read test.txt"},
 		},
 	}
 
-	events := provider.StreamReply(context.Background(), conv, nil, agent.StreamOptions{})
+	events := provider.StreamReply(context.Background(), conv, nil, core.StreamOptions{})
 
 	// Collect tool calls
-	var toolCalls []agent.ToolCall
+	var toolCalls []core.ToolCall
 	for event := range events {
-		if event.Type == agent.ToolCallEvent && event.ToolCall != nil {
+		if event.Type == core.ToolCallEvent && event.ToolCall != nil {
 			toolCalls = append(toolCalls, *event.ToolCall)
 		}
 	}
@@ -105,18 +105,18 @@ func TestOpenAIProvider_MultipleToolCalls(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(server.URL, "test-key", "gpt-4")
-	conv := agent.Conversation{
-		Turns: []agent.Turn{
+	conv := core.Conversation{
+		Turns: []core.Turn{
 			{Role: "user", Content: "Do both"},
 		},
 	}
 
-	events := provider.StreamReply(context.Background(), conv, nil, agent.StreamOptions{})
+	events := provider.StreamReply(context.Background(), conv, nil, core.StreamOptions{})
 
 	// Collect tool calls in order
-	var toolCalls []agent.ToolCall
+	var toolCalls []core.ToolCall
 	for event := range events {
-		if event.Type == agent.ToolCallEvent && event.ToolCall != nil {
+		if event.Type == core.ToolCallEvent && event.ToolCall != nil {
 			toolCalls = append(toolCalls, *event.ToolCall)
 		}
 	}
@@ -146,18 +146,18 @@ func TestOpenAIProvider_CancelContext(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(server.URL, "test-key", "gpt-4")
-	conv := agent.Conversation{
-		Turns: []agent.Turn{
+	conv := core.Conversation{
+		Turns: []core.Turn{
 			{Role: "user", Content: "Hi"},
 		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	events := provider.StreamReply(ctx, conv, nil, agent.StreamOptions{})
+	events := provider.StreamReply(ctx, conv, nil, core.StreamOptions{})
 
 	// Read first event
 	event := <-events
-	if event.Type != agent.TextDelta {
+	if event.Type != core.TextDelta {
 		t.Errorf("expected text delta, got %v", event.Type)
 	}
 
@@ -166,7 +166,7 @@ func TestOpenAIProvider_CancelContext(t *testing.T) {
 
 	// Should get error event
 	for event := range events {
-		if event.Type == agent.ErrorEvent {
+		if event.Type == core.ErrorEvent {
 			return // Success
 		}
 	}
@@ -182,17 +182,17 @@ func TestOpenAIProvider_PermanentError(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(server.URL, "bad-key", "gpt-4")
-	conv := agent.Conversation{
-		Turns: []agent.Turn{
+	conv := core.Conversation{
+		Turns: []core.Turn{
 			{Role: "user", Content: "Hi"},
 		},
 	}
 
-	events := provider.StreamReply(context.Background(), conv, nil, agent.StreamOptions{})
+	events := provider.StreamReply(context.Background(), conv, nil, core.StreamOptions{})
 
 	// Should get error event immediately (no retry)
 	event := <-events
-	if event.Type != agent.ErrorEvent {
+	if event.Type != core.ErrorEvent {
 		t.Errorf("expected error event, got %v", event.Type)
 	}
 
@@ -210,11 +210,11 @@ func TestOpenAIProvider_ReplyEndReason(t *testing.T) {
 	tests := []struct {
 		name         string
 		finishReason string
-		expected     agent.ReplyEndReason
+		expected     core.ReplyEndReason
 	}{
-		{"finished", "stop", agent.Finished},
-		{"tool_calls", "tool_calls", agent.StoppedToCallTools},
-		{"cut_off", "length", agent.CutOff},
+		{"finished", "stop", core.Finished},
+		{"tool_calls", "tool_calls", core.StoppedToCallTools},
+		{"cut_off", "length", core.CutOff},
 	}
 
 	for _, tt := range tests {
@@ -227,17 +227,17 @@ func TestOpenAIProvider_ReplyEndReason(t *testing.T) {
 			defer server.Close()
 
 			provider := NewOpenAIProvider(server.URL, "test-key", "gpt-4")
-			conv := agent.Conversation{
-				Turns: []agent.Turn{
+			conv := core.Conversation{
+				Turns: []core.Turn{
 					{Role: "user", Content: "Hi"},
 				},
 			}
 
-			events := provider.StreamReply(context.Background(), conv, nil, agent.StreamOptions{})
+			events := provider.StreamReply(context.Background(), conv, nil, core.StreamOptions{})
 
-			var replyEnded *agent.ReplyEnded
+			var replyEnded *core.ReplyEnded
 			for event := range events {
-				if event.Type == agent.ReplyEndedEvent {
+				if event.Type == core.ReplyEndedEvent {
 					replyEnded = event.ReplyEnded
 				}
 			}
@@ -267,15 +267,15 @@ func TestOpenAIProvider_PerRequestOptions(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(server.URL, "test-key", "default-model")
-	conv := agent.Conversation{
-		Turns: []agent.Turn{
+	conv := core.Conversation{
+		Turns: []core.Turn{
 			{Role: "user", Content: "Hi"},
 		},
 	}
 
 	temp := 0.5
 	maxTok := 100
-	opts := agent.StreamOptions{
+	opts := core.StreamOptions{
 		Model:       "custom-model",
 		Temperature: &temp,
 		MaxTokens:   &maxTok,
