@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/blkcor/coragent/pkg/agent"
+	"github.com/blkcor/coragent/internal/core"
 )
 
 // FakeProvider implements the Provider interface for testing.
@@ -22,7 +22,7 @@ type ScriptedReply struct {
 	TextDeltas []string
 	ToolCalls  []ScriptedToolCall
 	Error      error
-	EndReason  agent.ReplyEndReason
+	EndReason  core.ReplyEndReason
 }
 
 // ScriptedToolCall defines a scripted tool call
@@ -38,8 +38,8 @@ func NewFakeProvider(scripts []ScriptedReply) *FakeProvider {
 }
 
 // StreamReply implements the Provider interface
-func (p *FakeProvider) StreamReply(ctx context.Context, conv agent.Conversation, tools []agent.Tool, opts agent.StreamOptions) <-chan agent.RunEvent {
-	events := make(chan agent.RunEvent, 10)
+func (p *FakeProvider) StreamReply(ctx context.Context, conv core.Conversation, tools []core.Tool, opts core.StreamOptions) <-chan core.RunEvent {
+	events := make(chan core.RunEvent, 10)
 
 	go func() {
 		defer close(events)
@@ -48,8 +48,8 @@ func (p *FakeProvider) StreamReply(ctx context.Context, conv agent.Conversation,
 		p.mu.Lock()
 		if p.callIdx >= len(p.scripts) {
 			p.mu.Unlock()
-			events <- agent.RunEvent{
-				Type:  agent.ErrorEvent,
+			events <- core.RunEvent{
+				Type:  core.ErrorEvent,
 				Error: fmt.Errorf("no more scripted replies (call %d, have %d scripts)", p.callIdx+1, len(p.scripts)),
 			}
 			return
@@ -60,8 +60,8 @@ func (p *FakeProvider) StreamReply(ctx context.Context, conv agent.Conversation,
 
 		// Check for scripted error
 		if script.Error != nil {
-			events <- agent.RunEvent{
-				Type:  agent.ErrorEvent,
+			events <- core.RunEvent{
+				Type:  core.ErrorEvent,
 				Error: script.Error,
 			}
 			return
@@ -71,14 +71,14 @@ func (p *FakeProvider) StreamReply(ctx context.Context, conv agent.Conversation,
 		for _, delta := range script.TextDeltas {
 			select {
 			case <-ctx.Done():
-				events <- agent.RunEvent{
-					Type:  agent.ErrorEvent,
+				events <- core.RunEvent{
+					Type:  core.ErrorEvent,
 					Error: ctx.Err(),
 				}
 				return
 			default:
-				events <- agent.RunEvent{
-					Type:      agent.TextDelta,
+				events <- core.RunEvent{
+					Type:      core.TextDelta,
 					TextDelta: delta,
 				}
 			}
@@ -88,24 +88,24 @@ func (p *FakeProvider) StreamReply(ctx context.Context, conv agent.Conversation,
 		for _, tc := range script.ToolCalls {
 			select {
 			case <-ctx.Done():
-				events <- agent.RunEvent{
-					Type:  agent.ErrorEvent,
+				events <- core.RunEvent{
+					Type:  core.ErrorEvent,
 					Error: ctx.Err(),
 				}
 				return
 			default:
 				args, err := parseArguments(tc.Arguments)
 				if err != nil {
-					events <- agent.RunEvent{
-						Type:  agent.ErrorEvent,
+					events <- core.RunEvent{
+						Type:  core.ErrorEvent,
 						Error: fmt.Errorf("fake provider: parse arguments for %s: %w", tc.Name, err),
 					}
 					return
 				}
 
-				events <- agent.RunEvent{
-					Type: agent.ToolCallEvent,
-					ToolCall: &agent.ToolCall{
+				events <- core.RunEvent{
+					Type: core.ToolCallEvent,
+					ToolCall: &core.ToolCall{
 						ID:        tc.ID,
 						ToolName:  tc.Name,
 						Arguments: args,
@@ -115,9 +115,9 @@ func (p *FakeProvider) StreamReply(ctx context.Context, conv agent.Conversation,
 		}
 
 		// Emit reply ended
-		events <- agent.RunEvent{
-			Type: agent.ReplyEndedEvent,
-			ReplyEnded: &agent.ReplyEnded{
+		events <- core.RunEvent{
+			Type: core.ReplyEndedEvent,
+			ReplyEnded: &core.ReplyEnded{
 				Reason: script.EndReason,
 			},
 		}

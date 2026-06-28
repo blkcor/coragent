@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blkcor/coragent/pkg/agent"
+	"github.com/blkcor/coragent/internal/core"
 )
 
 // OpenAIProvider implements the Provider interface for OpenAI-compatible endpoints
@@ -46,8 +46,8 @@ func NewOpenAIProvider(baseURL, apiKey, defaultModel string) *OpenAIProvider {
 }
 
 // StreamReply implements the Provider interface
-func (p *OpenAIProvider) StreamReply(ctx context.Context, conv agent.Conversation, tools []agent.Tool, opts agent.StreamOptions) <-chan agent.RunEvent {
-	events := make(chan agent.RunEvent, 10)
+func (p *OpenAIProvider) StreamReply(ctx context.Context, conv core.Conversation, tools []core.Tool, opts core.StreamOptions) <-chan core.RunEvent {
+	events := make(chan core.RunEvent, 10)
 
 	go func() {
 		defer close(events)
@@ -65,7 +65,7 @@ func (p *OpenAIProvider) StreamReply(ctx context.Context, conv agent.Conversatio
 				case <-timer.C:
 				case <-ctx.Done():
 					timer.Stop()
-					events <- agent.RunEvent{Type: agent.ErrorEvent, Error: ctx.Err()}
+					events <- core.RunEvent{Type: core.ErrorEvent, Error: ctx.Err()}
 					return
 				}
 			}
@@ -78,20 +78,20 @@ func (p *OpenAIProvider) StreamReply(ctx context.Context, conv agent.Conversatio
 			lastErr = err
 			if emitted || !isTransient(err) {
 				// Can't retry after partial emission; also don't retry permanent failures
-				events <- agent.RunEvent{Type: agent.ErrorEvent, Error: err}
+				events <- core.RunEvent{Type: core.ErrorEvent, Error: err}
 				return
 			}
 		}
 
 		// Retry exhausted
-		events <- agent.RunEvent{Type: agent.ErrorEvent, Error: fmt.Errorf("retry exhausted: %w", lastErr)}
+		events <- core.RunEvent{Type: core.ErrorEvent, Error: fmt.Errorf("retry exhausted: %w", lastErr)}
 	}()
 
 	return events
 }
 
 // buildRequest constructs the ChatCompletionRequest from conversation and tools
-func (p *OpenAIProvider) buildRequest(conv agent.Conversation, tools []agent.Tool, opts agent.StreamOptions) *ChatCompletionRequest {
+func (p *OpenAIProvider) buildRequest(conv core.Conversation, tools []core.Tool, opts core.StreamOptions) *ChatCompletionRequest {
 	// Convert conversation to messages
 	var messages []ChatMessage
 	for _, turn := range conv.Turns {
@@ -175,7 +175,7 @@ func (p *OpenAIProvider) buildRequest(conv agent.Conversation, tools []agent.Too
 // streamOnce performs a single streaming request.
 // Returns (emitted, err) where emitted indicates whether any events were
 // sent to the channel before the error occurred.
-func (p *OpenAIProvider) streamOnce(ctx context.Context, req *ChatCompletionRequest, events chan<- agent.RunEvent) (bool, error) {
+func (p *OpenAIProvider) streamOnce(ctx context.Context, req *ChatCompletionRequest, events chan<- core.RunEvent) (bool, error) {
 	// Marshal request body
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -212,7 +212,7 @@ func (p *OpenAIProvider) streamOnce(ctx context.Context, req *ChatCompletionRequ
 // streamResponse reads and parses the SSE stream.
 // Returns (emitted, err) where emitted indicates whether any events were
 // written to the channel.
-func (p *OpenAIProvider) streamResponse(ctx context.Context, body io.Reader, events chan<- agent.RunEvent) (bool, error) {
+func (p *OpenAIProvider) streamResponse(ctx context.Context, body io.Reader, events chan<- core.RunEvent) (bool, error) {
 	scanner := bufio.NewScanner(body)
 	toolCallBuffer := make(map[int]*toolCallAccumulator)
 	var toolCallOrder []int
@@ -246,22 +246,22 @@ func (p *OpenAIProvider) streamResponse(ctx context.Context, body io.Reader, eve
 				if acc, ok := toolCallBuffer[idx]; ok {
 					toolCall, err := acc.complete()
 					if err != nil {
-						events <- agent.RunEvent{Type: agent.ErrorEvent, Error: err}
+						events <- core.RunEvent{Type: core.ErrorEvent, Error: err}
 						return true, err
 					}
-					events <- agent.RunEvent{Type: agent.ToolCallEvent, ToolCall: toolCall}
+					events <- core.RunEvent{Type: core.ToolCallEvent, ToolCall: toolCall}
 				}
 			}
 
 			// Use correct end reason based on whether tool calls were accumulated
-			reason := agent.Finished
+			reason := core.Finished
 			if len(toolCallOrder) > 0 {
-				reason = agent.StoppedToCallTools
+				reason = core.StoppedToCallTools
 			}
 
-			events <- agent.RunEvent{
-				Type: agent.ReplyEndedEvent,
-				ReplyEnded: &agent.ReplyEnded{
+			events <- core.RunEvent{
+				Type: core.ReplyEndedEvent,
+				ReplyEnded: &core.ReplyEnded{
 					Reason: reason,
 				},
 			}
@@ -278,8 +278,8 @@ func (p *OpenAIProvider) streamResponse(ctx context.Context, body io.Reader, eve
 		for _, choice := range chunk.Choices {
 			// Emit text deltas
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-				events <- agent.RunEvent{
-					Type:      agent.TextDelta,
+				events <- core.RunEvent{
+					Type:      core.TextDelta,
 					TextDelta: *choice.Delta.Content,
 				}
 				emitted = true
@@ -315,49 +315,49 @@ func (p *OpenAIProvider) streamResponse(ctx context.Context, body io.Reader, eve
 						if acc, ok := toolCallBuffer[idx]; ok {
 							toolCall, err := acc.complete()
 							if err != nil {
-								events <- agent.RunEvent{Type: agent.ErrorEvent, Error: err}
+								events <- core.RunEvent{Type: core.ErrorEvent, Error: err}
 								return true, err
 							}
-							events <- agent.RunEvent{Type: agent.ToolCallEvent, ToolCall: toolCall}
+							events <- core.RunEvent{Type: core.ToolCallEvent, ToolCall: toolCall}
 						}
 					}
-					events <- agent.RunEvent{
-						Type: agent.ReplyEndedEvent,
-						ReplyEnded: &agent.ReplyEnded{
-							Reason: agent.StoppedToCallTools,
+					events <- core.RunEvent{
+						Type: core.ReplyEndedEvent,
+						ReplyEnded: &core.ReplyEnded{
+							Reason: core.StoppedToCallTools,
 						},
 					}
 					return true, nil
 				case "length":
-					events <- agent.RunEvent{
-						Type: agent.ReplyEndedEvent,
-						ReplyEnded: &agent.ReplyEnded{
-							Reason: agent.CutOff,
+					events <- core.RunEvent{
+						Type: core.ReplyEndedEvent,
+						ReplyEnded: &core.ReplyEnded{
+							Reason: core.CutOff,
 						},
 					}
 					return true, nil
 				case "stop":
-					events <- agent.RunEvent{
-						Type: agent.ReplyEndedEvent,
-						ReplyEnded: &agent.ReplyEnded{
-							Reason: agent.Finished,
+					events <- core.RunEvent{
+						Type: core.ReplyEndedEvent,
+						ReplyEnded: &core.ReplyEnded{
+							Reason: core.Finished,
 						},
 					}
 					return true, nil
 				case "content_filter":
-					events <- agent.RunEvent{
-						Type: agent.ReplyEndedEvent,
-						ReplyEnded: &agent.ReplyEnded{
-							Reason: agent.CutOff,
+					events <- core.RunEvent{
+						Type: core.ReplyEndedEvent,
+						ReplyEnded: &core.ReplyEnded{
+							Reason: core.CutOff,
 						},
 					}
 					return true, nil
 				default:
 					// Unknown finish reason — treat as normal completion
-					events <- agent.RunEvent{
-						Type: agent.ReplyEndedEvent,
-						ReplyEnded: &agent.ReplyEnded{
-							Reason: agent.Finished,
+					events <- core.RunEvent{
+						Type: core.ReplyEndedEvent,
+						ReplyEnded: &core.ReplyEnded{
+							Reason: core.Finished,
 						},
 					}
 					return true, nil
@@ -372,13 +372,13 @@ func (p *OpenAIProvider) streamResponse(ctx context.Context, body io.Reader, eve
 
 	// Stream ended without [DONE] or finish_reason — emit a terminal event
 	// so consumers always see a ReplyEndedEvent before the channel closes.
-	reason := agent.Finished
+	reason := core.Finished
 	if len(toolCallOrder) > 0 {
-		reason = agent.StoppedToCallTools
+		reason = core.StoppedToCallTools
 	}
-	events <- agent.RunEvent{
-		Type: agent.ReplyEndedEvent,
-		ReplyEnded: &agent.ReplyEnded{
+	events <- core.RunEvent{
+		Type: core.ReplyEndedEvent,
+		ReplyEnded: &core.ReplyEnded{
 			Reason: reason,
 		},
 	}
@@ -411,7 +411,7 @@ type toolCallAccumulator struct {
 }
 
 // complete parses the accumulated fragments into a ToolCall
-func (a *toolCallAccumulator) complete() (*agent.ToolCall, error) {
+func (a *toolCallAccumulator) complete() (*core.ToolCall, error) {
 	if a.name == "" {
 		return nil, fmt.Errorf("tool call missing name")
 	}
@@ -423,7 +423,7 @@ func (a *toolCallAccumulator) complete() (*agent.ToolCall, error) {
 		}
 	}
 
-	return &agent.ToolCall{
+	return &core.ToolCall{
 		ID:        a.id,
 		ToolName:  a.name,
 		Arguments: args,
