@@ -13,7 +13,7 @@ Coragent is a **coding-agent harness in Go** — a reusable SDK that drives LLM-
 | Internal harness machinery | `internal/` |
 | TUI frontend | `tui/` + `cmd/coragent/` |
 
-## Module & Toolchain
+## Toolchain
 
 - **Module:** `github.com/blkcor/coragent`
 - **Go:** 1.22+
@@ -21,6 +21,16 @@ Coragent is a **coding-agent harness in Go** — a reusable SDK that drives LLM-
 - **Test:** `go test ./...`
 - **Build:** `go build ./cmd/coragent`
 - **Format:** `gofmt -w .` (or `goimports`)
+
+Prefer these CLI tools (consistent with the developer's environment):
+
+| Use | Not |
+|-----|-----|
+| `rg` | `grep` |
+| `fd` | `find` |
+| `eza` | `ls` |
+| `sd` | `sed` |
+| `golangci-lint` | manual vet invocations |
 
 ## Repository Layout
 
@@ -42,6 +52,57 @@ coragent/
 └── docs/               # architecture · roadmap · prd/
 ```
 
+## Domain Vocabulary
+
+These are the canonical terms used across the codebase — use them consistently.
+
+- **Conversation** — ordered history of the exchange: system framing, user turns, assistant turns, and tool results.
+- **ToolCall** — the assistant's request to use a named capability with arguments. The model proposes; the harness disposes.
+- **ToolResult** — what a tool returns, marked success or error so the model can react.
+- **Tool** — a named capability: purpose, argument shape, and execution behavior. Built-ins and subagent-provided tools register the same way.
+- **Provider** — the model backend. Given conversation + available tools, it streams back the assistant reply (including tool calls). First implementation: OpenAI-compatible protocol.
+- **Sandbox** — confinement under which shell commands run, governed by a policy (read/write/network access).
+- **Session** — one agent interaction lifecycle. Owns the conversation, the tool registry, and the execution chain.
+
+## The Event Stream
+
+The harness communicates outward as a **stream of typed events**. The frontend consumes it; it never reads internal state.
+
+Events conceptually:
+- Assistant text (streaming deltas)
+- Tool-call started / finished (with result)
+- Status changes (thinking, calling tool, idle)
+- Turn finished / error (closes the channel)
+- **Permission request** — the one event where the harness blocks on a human. It carries a reply path; the frontend answers (allow / deny / remember / edit args).
+
+This stream is the entire decoupling. Swap the frontend, the harness is unchanged.
+
+## The Tool-Execution Chokepoint
+
+```
+ToolCall
+   │
+   ▼
+[ PreToolUse hooks ]     ← HARD gate — block ⇒ abort, model cannot override
+   │
+   ▼
+[ Permission engine ]    ← SOFT gate — allow / deny / ask the human
+   │
+   ▼
+[ Sandbox ]              ← shell tools only — OS-level confinement
+   │
+   ▼
+[ Tool.Execute ]
+   │
+   ▼
+[ PostToolUse hooks ]    ← HARD gate — inspect / annotate / block result
+   │
+   ▼
+ToolResult → back into the loop
+```
+
+**Permission vs Hooks:** permission asks a human (advisory, convenience); hooks enforce unconditionally (the real guardrail). A blocking hook stops the call even in bypass mode.
+
 ## Invariants (never break these)
 
 1. **The harness never imports a frontend.** `pkg/agent` and `internal/` must not reference `tui/` or `cmd/`.
@@ -49,6 +110,14 @@ coragent/
 3. **One execution path.** Every tool call flows through exactly one middleware chain (hooks → permission → sandbox → tool → post-hooks). No second door, no bypass.
 4. **Provider, Sandbox, and Tool are seams.** OpenAI-compat and sandbox-exec are the first implementations — never the only allowed ones.
 5. **A phase must not change a prior phase's public contract.** It integrates without breaking what came before.
+
+## Non-Goals (v1)
+
+These are explicitly out of scope — do not build toward them:
+
+- Multi-provider abstraction beyond the single provider seam.
+- Non-macOS kernel sandbox backends (the seam allows them later).
+- MCP, web UI, plugin marketplace, billing, telemetry.
 
 ## Go Conventions
 
@@ -94,56 +163,17 @@ coragent/
 - Temp directories via `t.TempDir()` for file-tool tests — never touch real user files.
 - External binary dependencies (e.g., `rg` for grep tool) degrade gracefully; tests handle absence.
 
-## The Event Stream
-
-The harness communicates outward as a **stream of typed events**. The frontend consumes it; it never reads internal state.
-
-Events conceptually:
-- Assistant text (streaming deltas)
-- Tool-call started / finished (with result)
-- Status changes (thinking, calling tool, idle)
-- Turn finished / error (closes the channel)
-- **Permission request** — the one event where the harness blocks on a human. It carries a reply path; the frontend answers (allow / deny / remember / edit args).
-
-This stream is the entire decoupling. Swap the frontend, the harness is unchanged.
-
-## The Tool-Execution Chokepoint
-
-```
-ToolCall
-   │
-   ▼
-[ PreToolUse hooks ]     ← HARD gate — block ⇒ abort, model cannot override
-   │
-   ▼
-[ Permission engine ]    ← SOFT gate — allow / deny / ask the human
-   │
-   ▼
-[ Sandbox ]              ← shell tools only — OS-level confinement
-   │
-   ▼
-[ Tool.Execute ]
-   │
-   ▼
-[ PostToolUse hooks ]    ← HARD gate — inspect / annotate / block result
-   │
-   ▼
-ToolResult → back into the loop
-```
-
-**Permission vs Hooks:** permission asks a human (advisory, convenience); hooks enforce unconditionally (the real guardrail). A blocking hook stops the call even in bypass mode.
-
 ## Phase Delivery
 
 Phases are built in order; each is runnable on the one before it.
 
-| Milestone | Phases | Meaning |
-|-----------|--------|---------|
-| M1 "It talks" | 0 + 1 | Multi-turn loop with a streaming provider |
-| M2 "It acts" | 2 + 3 | Agent reads/edits/runs with human-in-the-loop |
-| M3 "It's safe" | 4 + 5 | Hard hooks + OS sandbox enforced |
-| M4 "It scales" | 6 | Subagent delegation |
-| M5 "It ships" | 7 | Full TUI daily-driver |
+| Milestone | Phases | Meaning | Status |
+|-----------|--------|---------|--------|
+| M1 "It talks" | 0 + 1 | Multi-turn loop with a streaming provider | ⬜ |
+| M2 "It acts" | 2 + 3 | Agent reads/edits/runs with human-in-the-loop | |
+| M3 "It's safe" | 4 + 5 | Hard hooks + OS sandbox enforced | |
+| M4 "It scales" | 6 | Subagent delegation | |
+| M5 "It ships" | 7 | Full TUI daily-driver | |
 
 ### Definition of Done (every phase)
 
@@ -153,18 +183,4 @@ A phase is done when:
 - [ ] PRD acceptance scenarios pass
 - [ ] Integrates with prior phases without changing their public contracts
 
-## Types Are Designed at Build Time
-
-The architecture and PRDs describe **what** and **why** — not concrete Go types. Interface signatures and data shapes are designed in the planning step immediately before each phase's implementation, when surrounding code is in hand. The architecture fixes boundaries; the wire format is a task-time decision.
-
-## CLI Environment
-
-Prefer these tools (consistent with the developer's environment):
-
-| Use | Not |
-|-----|-----|
-| `rg` | `grep` |
-| `fd` | `find` |
-| `eza` | `ls` |
-| `sd` | `sed` |
-| `golangci-lint` | manual vet invocations |
+Interface signatures and data shapes are designed in the planning step immediately before each phase's implementation, when surrounding code is in hand. The architecture fixes boundaries; the wire format is a task-time decision.

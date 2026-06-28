@@ -1,0 +1,14 @@
+.PHONY: build test lint clean
+
+build:
+	go build ./...
+
+test:
+	go test ./...
+
+lint:
+	golangci-lint run ./...
+
+clean:
+	go clean
+	rm -rf bin/
