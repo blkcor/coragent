@@ -8,6 +8,7 @@ import (
 	convo "github.com/blkcor/coragent/internal/context"
 	"github.com/blkcor/coragent/internal/executor"
 	"github.com/blkcor/coragent/internal/loop"
+	"github.com/blkcor/coragent/internal/tools"
 )
 
 // defaultMaxRounds bounds how many model rounds a run may take before a normal
@@ -26,8 +27,13 @@ type SessionConfig struct {
 	// SystemPrompt seeds the conversation's system framing.
 	SystemPrompt string
 
-	// Tools are the capabilities offered to the model.
+	// Tools are the capabilities offered to the model. When left empty and no
+	// custom Dispatcher is set, the built-in tools are advertised automatically.
 	Tools []Tool
+
+	// ToolHandlers are custom executable tools registered alongside the built-ins
+	// in the default executor. Ignored when a custom Dispatcher is supplied.
+	ToolHandlers []ToolHandler
 
 	// MaxRounds caps model rounds before a normal step-limit stop. Zero uses a default.
 	MaxRounds int
@@ -38,7 +44,8 @@ type SessionConfig struct {
 	// StreamOptions are the per-request model options.
 	StreamOptions StreamOptions
 
-	// Dispatcher is the single tool-dispatch seam. Nil uses the inert stand-in.
+	// Dispatcher is the single tool-dispatch seam. Nil builds the default executor
+	// (the ordered chain with inert stages) seeded with the built-in tools.
 	Dispatcher Dispatcher
 }
 
@@ -63,19 +70,39 @@ func NewSession(cfg SessionConfig) *Session {
 	if maxRounds <= 0 {
 		maxRounds = defaultMaxRounds
 	}
-	var d Dispatcher = cfg.Dispatcher
-	if d == nil {
-		d = executor.StandIn{}
-	}
+
+	d, advertised := resolveDispatcher(cfg)
+
 	return &Session{
 		provider:   cfg.Provider,
 		convo:      convo.New(cfg.SystemPrompt),
 		dispatcher: d,
-		tools:      cfg.Tools,
+		tools:      advertised,
 		maxRounds:  maxRounds,
 		budget:     cfg.ContextBudgetTokens,
 		opts:       cfg.StreamOptions,
 	}
+}
+
+// resolveDispatcher picks the tool-dispatch seam and the tool list advertised to
+// the model. A caller-supplied Dispatcher is used as-is with the caller's Tools.
+// Otherwise the default executor is built — the one ordered chain with inert
+// stages over a catalog of the built-ins plus any custom handlers — and, unless
+// the caller pinned an explicit Tools list, the catalog's own set is advertised.
+func resolveDispatcher(cfg SessionConfig) (Dispatcher, []Tool) {
+	if cfg.Dispatcher != nil {
+		return cfg.Dispatcher, cfg.Tools
+	}
+
+	catalog := tools.NewDefaultCatalog()
+	for _, h := range cfg.ToolHandlers {
+		catalog.MustRegister(h)
+	}
+	advertised := cfg.Tools
+	if advertised == nil {
+		advertised = catalog.Advertise()
+	}
+	return executor.NewDefault(catalog), advertised
 }
 
 // Run starts a run from the user's input and returns one live, read-only event
