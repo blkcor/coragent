@@ -48,6 +48,21 @@ type (
 // Tool-dispatch seam.
 type Dispatcher = core.Dispatcher
 
+// Tool authoring. An SDK developer implements ToolHandler to add a custom
+// capability; it travels the identical execution path as the built-ins.
+type ToolHandler = core.ToolHandler
+
+// Execution-chain stage seams. Phase 2 ships inert placeholders for these; later
+// phases supply real implementations injected at executor construction.
+type (
+	PreToolCheck     = core.PreToolCheck
+	Permission       = core.Permission
+	Sandbox          = core.Sandbox
+	PostToolCheck    = core.PostToolCheck
+	StageDecision    = core.StageDecision
+	PermissionResult = core.PermissionResult
+)
+
 // RunEventType values.
 const (
 	TextDelta                = core.TextDelta

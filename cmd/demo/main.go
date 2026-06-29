@@ -18,8 +18,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/blkcor/coragent/internal/config"
@@ -31,7 +33,63 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "fake" {
 		os.Exit(runFake())
 	}
+	if len(os.Args) > 1 && os.Args[1] == "tools" {
+		os.Exit(runTools())
+	}
 	os.Exit(runInteractive())
+}
+
+// runTools drives all six built-in tools through the one execution path against a
+// scripted provider — the M2 "It acts" readout. No credentials, no network: a
+// fake model issues a tool call per round into a throwaway workspace, and each
+// call travels the real executor chain (inert pre/permission/sandbox stages).
+func runTools() int {
+	work, err := os.MkdirTemp("", "coragent-demo-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "make workspace: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(work)
+	file := filepath.Join(work, "notes.txt")
+
+	steps := []struct {
+		say  string
+		tool string
+		args map[string]interface{}
+	}{
+		{"Creating a file…", "write_file", map[string]interface{}{"path": file, "content": "hello\nworld\n", "create_parents": true}},
+		{"Reading it back…", "read_file", map[string]interface{}{"path": file}},
+		{"Making a precise edit…", "edit_file", map[string]interface{}{"path": file, "old_string": "world", "new_string": "coragent"}},
+		{"Listing project files…", "find_files", map[string]interface{}{"pattern": "*.txt", "root": work}},
+		{"Searching contents…", "search_content", map[string]interface{}{"pattern": "coragent", "path": work}},
+		{"Running a command…", "run_command", map[string]interface{}{"command": "echo all six tools exercised"}},
+	}
+
+	replies := make([]testutil.ScriptedReply, 0, len(steps)+1)
+	for i, s := range steps {
+		args, _ := json.Marshal(s.args)
+		replies = append(replies, testutil.ScriptedReply{
+			TextDeltas: []string{s.say},
+			ToolCalls:  []testutil.ScriptedToolCall{{ID: fmt.Sprintf("c%d", i+1), Name: s.tool, Arguments: string(args)}},
+			EndReason:  agent.StoppedToCallTools,
+		})
+	}
+	replies = append(replies, testutil.ScriptedReply{TextDeltas: []string{"Done — all six built-ins ran through the one path."}, EndReason: agent.Finished})
+
+	fmt.Printf("Using fake provider; workspace %s\n", work)
+	session := agent.NewSession(agent.SessionConfig{
+		Provider:     testutil.NewFakeProvider(replies),
+		SystemPrompt: "You are a coding assistant exercising the built-in tools.",
+	})
+
+	events, err := session.Run(context.Background(), "Exercise every built-in tool.")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start run: %v\n", err)
+		return 1
+	}
+	code := readout(events)
+	fmt.Println("--- stream closed ---")
+	return code
 }
 
 // runFake plays the canned headline scenario against the scripted provider.

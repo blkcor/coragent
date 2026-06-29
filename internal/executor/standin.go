@@ -1,10 +1,6 @@
-// Package executor holds the single tool-dispatch path.
-//
-// In Phase 1 the path is an inert stand-in: it produces a placeholder result and
-// runs no real tool. It exists so the loop has exactly one dispatch seam to call.
-// Phase 2 replaces it with the real registry and middleware chain (hooks →
-// permission → sandbox → tool → post-hooks) behind the same core.Dispatcher
-// interface, so the loop is untouched.
+// This file holds the Phase 1 inert stand-in dispatcher. The real ordered chain
+// lives in chain.go (Phase 2); StandIn remains as a trivial Dispatcher for tests
+// and as documentation of the seam's original shape.
 package executor
 
 import (
