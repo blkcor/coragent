@@ -206,6 +206,15 @@ type PermissionRequest struct {
 	// ToolCall is the tool call requiring permission.
 	ToolCall ToolCall
 
+	// Reason states what the action is and why approval is needed, for the prompt.
+	Reason string
+
+	// RememberedRule is the "<kind>:<match>" rule a Remember decision would persist
+	// for this call, or "" when the action cannot be safely generalized (e.g. a
+	// compound shell command). The frontend can show it so the human sees what
+	// "remember" will save before answering.
+	RememberedRule string
+
 	// ReplyPath is how to send the decision back.
 	ReplyPath chan<- PermissionDecision
 }

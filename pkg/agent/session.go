@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 
+	"github.com/blkcor/coragent/internal/config"
 	convo "github.com/blkcor/coragent/internal/context"
 	"github.com/blkcor/coragent/internal/executor"
 	"github.com/blkcor/coragent/internal/loop"
+	"github.com/blkcor/coragent/internal/permission"
 	"github.com/blkcor/coragent/internal/tools"
 )
 
@@ -45,8 +48,24 @@ type SessionConfig struct {
 	StreamOptions StreamOptions
 
 	// Dispatcher is the single tool-dispatch seam. Nil builds the default executor
-	// (the ordered chain with inert stages) seeded with the built-in tools.
+	// (the ordered chain with a real permission gate) seeded with the built-in tools.
 	Dispatcher Dispatcher
+
+	// PermissionMode is the starting permission posture for the default executor:
+	// "default", "auto-accept-edits", "plan", or "bypass". Empty means default.
+	// Ignored when a custom Dispatcher is supplied.
+	PermissionMode string
+
+	// PermissionAllow and PermissionDeny are the starting allow/deny rule lists,
+	// each entry a "<kind>:<match>" string (e.g. "command:git status"). Ignored
+	// when a custom Dispatcher is supplied.
+	PermissionAllow []string
+	PermissionDeny  []string
+
+	// PersistRememberedRules, when set, durably writes a remembered decision to the
+	// project settings file so it survives a restart. Ignored when a custom
+	// Dispatcher is supplied.
+	PersistRememberedRules bool
 }
 
 // Session is one agent interaction lifecycle. It owns the conversation and runs
@@ -56,6 +75,7 @@ type Session struct {
 	provider   Provider
 	convo      *convo.Manager
 	dispatcher Dispatcher
+	permission *permission.Engine
 	tools      []Tool
 	maxRounds  int
 	budget     int
@@ -71,12 +91,13 @@ func NewSession(cfg SessionConfig) *Session {
 		maxRounds = defaultMaxRounds
 	}
 
-	d, advertised := resolveDispatcher(cfg)
+	d, eng, advertised := resolveDispatcher(cfg)
 
 	return &Session{
 		provider:   cfg.Provider,
 		convo:      convo.New(cfg.SystemPrompt),
 		dispatcher: d,
+		permission: eng,
 		tools:      advertised,
 		maxRounds:  maxRounds,
 		budget:     cfg.ContextBudgetTokens,
@@ -84,14 +105,15 @@ func NewSession(cfg SessionConfig) *Session {
 	}
 }
 
-// resolveDispatcher picks the tool-dispatch seam and the tool list advertised to
-// the model. A caller-supplied Dispatcher is used as-is with the caller's Tools.
-// Otherwise the default executor is built — the one ordered chain with inert
-// stages over a catalog of the built-ins plus any custom handlers — and, unless
-// the caller pinned an explicit Tools list, the catalog's own set is advertised.
-func resolveDispatcher(cfg SessionConfig) (Dispatcher, []Tool) {
+// resolveDispatcher picks the tool-dispatch seam, the permission engine, and the
+// tool list advertised to the model. A caller-supplied Dispatcher is used as-is
+// with the caller's Tools and no engine. Otherwise the default executor is built —
+// the one ordered chain with a real permission gate seeded from the config — over
+// a catalog of the built-ins plus any custom handlers; unless the caller pinned an
+// explicit Tools list, the catalog's own set is advertised.
+func resolveDispatcher(cfg SessionConfig) (Dispatcher, *permission.Engine, []Tool) {
 	if cfg.Dispatcher != nil {
-		return cfg.Dispatcher, cfg.Tools
+		return cfg.Dispatcher, nil, cfg.Tools
 	}
 
 	catalog := tools.NewDefaultCatalog()
@@ -102,7 +124,43 @@ func resolveDispatcher(cfg SessionConfig) (Dispatcher, []Tool) {
 	if advertised == nil {
 		advertised = catalog.Advertise()
 	}
-	return executor.NewDefault(catalog), advertised
+
+	eng := buildEngine(cfg)
+	stages := executor.InertStages()
+	stages.Permission = eng
+	return executor.New(catalog, stages, 0), eng, advertised
+}
+
+// buildEngine constructs the permission engine from the config: starting mode,
+// rule lists, and (optionally) persistence of remembered rules to the project
+// settings file. An invalid mode string falls back to the default posture.
+func buildEngine(cfg SessionConfig) *permission.Engine {
+	mode, _ := permission.ParseMode(cfg.PermissionMode)
+	pcfg := permission.Config{
+		Mode:  mode,
+		Rules: permission.ParseRules(cfg.PermissionAllow, cfg.PermissionDeny, nil),
+	}
+	if cfg.PersistRememberedRules {
+		pcfg.Save = func(allow bool, rule string) error {
+			return config.AppendPermissionRule(config.ProjectSettingsPath(), allow, rule)
+		}
+	}
+	return permission.New(pcfg)
+}
+
+// SetPermissionMode changes the permission posture for subsequent turns. It is
+// intended to be called between turns. It errors on an unknown mode or when the
+// session was built with a custom Dispatcher (which owns its own permission).
+func (s *Session) SetPermissionMode(mode string) error {
+	if s.permission == nil {
+		return fmt.Errorf("agent: session has no default permission engine (custom Dispatcher in use)")
+	}
+	m, err := permission.ParseMode(mode)
+	if err != nil {
+		return err
+	}
+	s.permission.SetMode(m)
+	return nil
 }
 
 // Run starts a run from the user's input and returns one live, read-only event

@@ -41,6 +41,8 @@ func (ShellCommand) Descriptor() core.Tool {
 
 func (ShellCommand) RunsCommands() bool { return true }
 
+func (ShellCommand) ActionKind() core.ActionKind { return core.ActionCommand }
+
 func (ShellCommand) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	command, ok := stringArg(args, "command")
 	if !ok || command == "" {
