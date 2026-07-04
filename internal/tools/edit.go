@@ -37,6 +37,8 @@ func (EditFile) Descriptor() core.Tool {
 
 func (EditFile) RunsCommands() bool { return false }
 
+func (EditFile) ActionKind() core.ActionKind { return core.ActionEdit }
+
 func (EditFile) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	path, ok := stringArg(args, "path")
 	if !ok || path == "" {

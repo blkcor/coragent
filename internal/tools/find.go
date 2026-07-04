@@ -51,6 +51,8 @@ func (FindFiles) Descriptor() core.Tool {
 
 func (FindFiles) RunsCommands() bool { return false }
 
+func (FindFiles) ActionKind() core.ActionKind { return core.ActionRead }
+
 func (FindFiles) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	pattern, ok := stringArg(args, "pattern")
 	if !ok || pattern == "" {

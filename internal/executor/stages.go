@@ -16,7 +16,7 @@ import (
 // and never edits arguments. Phase 3 replaces it.
 type allowAllPermission struct{}
 
-func (allowAllPermission) Decide(context.Context, core.ToolCall, func(core.RunEvent) error) core.PermissionResult {
+func (allowAllPermission) Decide(context.Context, core.ToolCall, core.ActionKind, func(core.RunEvent) error) core.PermissionResult {
 	return core.PermissionResult{Allow: true}
 }
 

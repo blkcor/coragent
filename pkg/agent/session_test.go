@@ -196,6 +196,69 @@ func TestBackpressureNoLossThenCancelUnblocks(t *testing.T) {
 	}
 }
 
+// --- permission wiring ------------------------------------------------------
+
+// findToolResult returns the first ToolFinishedEvent's result.
+func findToolResult(events []agent.RunEvent) *agent.ToolResult {
+	for _, ev := range events {
+		if ev.Type == agent.ToolFinishedEvent {
+			return ev.ToolResult
+		}
+	}
+	return nil
+}
+
+func TestPermissionStartingModeFromConfig(t *testing.T) {
+	p := testutil.NewFakeProvider([]testutil.ScriptedReply{
+		{ToolCalls: []testutil.ScriptedToolCall{{ID: "c1", Name: "write_file", Arguments: `{"path":"x.txt","content":"hi"}`}}, EndReason: agent.StoppedToCallTools},
+		{TextDeltas: []string{"ok"}, EndReason: agent.Finished},
+	})
+	s := agent.NewSession(agent.SessionConfig{Provider: p, SystemPrompt: "sys", PermissionMode: "plan"})
+
+	events := drain(t, mustRun(t, s, "go"))
+	res := findToolResult(events)
+	if res == nil || !res.IsError || !strings.Contains(res.Result, "plan mode") {
+		t.Fatalf("plan mode from config must block the write, got %+v", res)
+	}
+}
+
+func TestSetPermissionModeSwitchesBetweenTurns(t *testing.T) {
+	dir := t.TempDir()
+	target := dir + "/out.txt"
+	p := testutil.NewFakeProvider([]testutil.ScriptedReply{
+		{ToolCalls: []testutil.ScriptedToolCall{{ID: "c1", Name: "write_file", Arguments: `{"path":"` + target + `","content":"hi"}`}}, EndReason: agent.StoppedToCallTools},
+		{TextDeltas: []string{"ok"}, EndReason: agent.Finished},
+	})
+	// Start in plan mode, then loosen to bypass before the turn.
+	s := agent.NewSession(agent.SessionConfig{Provider: p, SystemPrompt: "sys", PermissionMode: "plan"})
+	if err := s.SetPermissionMode("bypass"); err != nil {
+		t.Fatalf("set mode: %v", err)
+	}
+
+	events := drain(t, mustRun(t, s, "go"))
+	res := findToolResult(events)
+	if res == nil || res.IsError {
+		t.Fatalf("after switching to bypass, the write must succeed, got %+v", res)
+	}
+}
+
+func TestSetPermissionModeRejectsUnknown(t *testing.T) {
+	p := testutil.NewFakeProvider([]testutil.ScriptedReply{{TextDeltas: []string{"hi"}, EndReason: agent.Finished}})
+	s := agent.NewSession(agent.SessionConfig{Provider: p, SystemPrompt: "sys"})
+	if err := s.SetPermissionMode("nonsense"); err == nil {
+		t.Error("an unknown mode must be rejected")
+	}
+}
+
+func mustRun(t *testing.T, s *agent.Session, input string) <-chan agent.RunEvent {
+	t.Helper()
+	ch, err := s.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	return ch
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func typesOf(events []agent.RunEvent) []agent.RunEventType {

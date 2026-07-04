@@ -52,6 +52,14 @@ type Dispatcher = core.Dispatcher
 // capability; it travels the identical execution path as the built-ins.
 type ToolHandler = core.ToolHandler
 
+// Action classification. A ToolHandler may optionally implement ActionClassifier
+// to declare its ActionKind, which the soft permission gate uses for mode-aware
+// decisions (plan mode blocks mutation; auto-accept-edits allows only edits).
+type (
+	ActionKind       = core.ActionKind
+	ActionClassifier = core.ActionClassifier
+)
+
 // Execution-chain stage seams. Phase 2 ships inert placeholders for these; later
 // phases supply real implementations injected at executor construction.
 type (
@@ -97,4 +105,12 @@ const (
 	StopReachedStepLimit = core.StopReachedStepLimit
 	StopCancelled        = core.StopCancelled
 	StopFailed           = core.StopFailed
+)
+
+// ActionKind values.
+const (
+	ActionUnknown = core.ActionUnknown
+	ActionRead    = core.ActionRead
+	ActionEdit    = core.ActionEdit
+	ActionCommand = core.ActionCommand
 )

@@ -38,6 +38,8 @@ func (SearchContent) Descriptor() core.Tool {
 
 func (SearchContent) RunsCommands() bool { return false }
 
+func (SearchContent) ActionKind() core.ActionKind { return core.ActionRead }
+
 func (SearchContent) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	pattern, ok := stringArg(args, "pattern")
 	if !ok || pattern == "" {
