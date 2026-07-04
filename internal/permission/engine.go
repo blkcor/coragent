@@ -339,11 +339,15 @@ func (e *Engine) ask(ctx context.Context, call core.ToolCall, kind core.ActionKi
 
 	select {
 	case d := <-reply:
-		if !d.Allow {
-			return core.PermissionResult{Allow: false, Reason: "denied by user"}
+		effectiveCall := call
+		if d.Allow && d.EditedArguments != nil {
+			effectiveCall.Arguments = d.EditedArguments
 		}
 		if d.Remember {
-			e.remember(kind, call, d)
+			e.remember(kind, effectiveCall, d)
+		}
+		if !d.Allow {
+			return core.PermissionResult{Allow: false, Reason: "denied by user"}
 		}
 		return core.PermissionResult{Allow: true, EditedArguments: d.EditedArguments}
 	case <-ctx.Done():

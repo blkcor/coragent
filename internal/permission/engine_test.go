@@ -354,6 +354,76 @@ func TestRememberAddsRuleImmediatelyAndPersists(t *testing.T) {
 	}
 }
 
+func TestRememberedDenialAddsDenyRuleImmediatelyAndPersists(t *testing.T) {
+	var saved []string
+	var savedAllow []bool
+	e := New(Config{
+		Mode: ModeDefault,
+		Save: func(allow bool, rule string) error {
+			savedAllow = append(savedAllow, allow)
+			saved = append(saved, rule)
+			return nil
+		},
+	})
+	res := e.Decide(context.Background(), cmdCall("rm -rf /tmp/demo"), core.ActionCommand,
+		answerEmit(core.PermissionDecision{Allow: false, Remember: true}))
+	if res.Allow {
+		t.Fatal("denied action must not be allowed")
+	}
+	if len(saved) != 1 || savedAllow[0] || saved[0] != "command:rm" {
+		t.Fatalf("remembered denial must persist as a deny rule, saved=%v allow=%v", saved, savedAllow)
+	}
+
+	prompted := false
+	res2 := e.Decide(context.Background(), cmdCall("rm -rf /tmp/other"), core.ActionCommand,
+		func(ev core.RunEvent) error {
+			if ev.Type == core.PermissionRequestedEvent {
+				prompted = true
+			}
+			return nil
+		})
+	if res2.Allow || prompted {
+		t.Errorf("remembered deny rule must refuse the next matching action without prompting (allow=%v prompted=%v)", res2.Allow, prompted)
+	}
+}
+
+func TestRememberedApprovalUsesEditedArguments(t *testing.T) {
+	var saved []string
+	e := New(Config{
+		Mode: ModeDefault,
+		Save: func(_ bool, rule string) error {
+			saved = append(saved, rule)
+			return nil
+		},
+	})
+	res := e.Decide(context.Background(), cmdCall("git stash"),
+		core.ActionCommand,
+		answerEmit(core.PermissionDecision{
+			Allow:           true,
+			Remember:        true,
+			EditedArguments: map[string]interface{}{"command": "git status --short"},
+		}))
+	if !res.Allow {
+		t.Fatal("approved action must be allowed")
+	}
+	if len(saved) != 1 || saved[0] != "command:git status" {
+		t.Fatalf("remembered approval must use edited arguments, saved=%v", saved)
+	}
+
+	prompted := false
+	res2 := e.Decide(context.Background(), cmdCall("git status --porcelain"),
+		core.ActionCommand,
+		func(ev core.RunEvent) error {
+			if ev.Type == core.PermissionRequestedEvent {
+				prompted = true
+			}
+			return nil
+		})
+	if !res2.Allow || prompted {
+		t.Errorf("edited remembered rule must cover the edited command family (allow=%v prompted=%v)", res2.Allow, prompted)
+	}
+}
+
 func TestRememberSaveFailureDoesNotBlock(t *testing.T) {
 	e := New(Config{
 		Mode: ModeDefault,
