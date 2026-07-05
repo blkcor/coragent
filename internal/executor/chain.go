@@ -93,8 +93,9 @@ func (e *Executor) Dispatch(ctx context.Context, call core.ToolCall, emit func(c
 	}
 
 	// Human permission: a denial stops the sandbox and the tool; edited arguments
-	// are re-validated and replace the originals.
-	perm := e.stages.Permission.Decide(ctx, call, emit)
+	// are re-validated and replace the originals. The permission stage is handed
+	// the call's action kind so it can apply mode-aware decisions.
+	perm := e.stages.Permission.Decide(ctx, call, classify(handler), emit)
 	if !perm.Allow {
 		return e.errorResult(call.ID, "permission denied: "+perm.Reason), nil
 	}
@@ -182,6 +183,19 @@ func (e *Executor) postCheck(ctx context.Context, call core.ToolCall, result cor
 		return p.PostCheckWithEmit(ctx, call, result, emit)
 	}
 	return e.stages.Post.PostCheck(ctx, call, result)
+}
+
+// classify resolves a handler's action kind for the permission stage: an explicit
+// ActionClassifier wins; otherwise a command-runner is ActionCommand; anything
+// else is ActionUnknown so plan mode can err safe.
+func classify(handler core.ToolHandler) core.ActionKind {
+	if c, ok := handler.(core.ActionClassifier); ok {
+		return c.ActionKind()
+	}
+	if handler.RunsCommands() {
+		return core.ActionCommand
+	}
+	return core.ActionUnknown
 }
 
 // Executor satisfies the public Dispatcher seam.

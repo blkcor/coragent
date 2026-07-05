@@ -39,15 +39,15 @@ edit, content-search, and file-find calls.
 
 ### Requirement: Inert placeholder stages
 
-The permission and sandbox stages SHALL remain drop-in stages supplied by their
-own phases, while the hard pre-check and hard post-check stage slots SHALL be
-filled by the hooks capability without altering the executor path. A session with
-no matching hooks SHALL pass through the hard stages exactly as the Phase 2 inert
-placeholders did.
+The sandbox stage SHALL remain a drop-in stage supplied by its own phase, the
+permission stage SHALL be a real human-in-the-loop gate, and the hard pre-check
+and hard post-check stage slots SHALL be filled by the hooks capability without
+altering the executor path. A session with no matching hooks SHALL pass through
+the hard stages exactly as the Phase 2 inert placeholders did.
 
 #### Scenario: No configured hooks preserves pass-through behavior
 
-- **WHEN** a read, edit, or shell call runs through the chain with no matching hooks configured
+- **WHEN** a read, edit, or shell call runs through the chain with no matching hooks configured and the permission stage allowing
 - **THEN** the hard hook stages allow the call and the result is identical to what the tool would produce on its own
 
 ### Requirement: Hard pre-check short-circuit
@@ -192,3 +192,20 @@ permission or running the tool.
 - **WHEN** a before-tool hook returns edited arguments that fit the tool's declared shape
 - **THEN** the edited arguments are the arguments passed to later stages
 
+### Requirement: Action classification handed to the permission stage
+
+The executor SHALL classify each resolved call's action kind — read-only,
+edits-files, or runs-commands — and SHALL hand that classification to the
+permission stage so the soft gate can apply mode-aware decisions. A call whose
+classification cannot be determined SHALL be handed an unknown classification so
+the permission stage can err safe.
+
+#### Scenario: Permission stage receives the call's action kind
+
+- **WHEN** a call is dispatched through the chain
+- **THEN** the permission stage is given the call's action classification before it decides
+
+#### Scenario: Unclassifiable call is handed an unknown classification
+
+- **WHEN** a dispatched call's action kind cannot be determined
+- **THEN** the permission stage receives an unknown classification rather than a guessed one

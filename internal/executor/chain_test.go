@@ -50,12 +50,53 @@ func TestTruncateCutsOnRuneBoundary(t *testing.T) {
 // --- inert stage placeholders ----------------------------------------------
 
 func TestInertPermissionAllowsAndNeverEdits(t *testing.T) {
-	r := allowAllPermission{}.Decide(context.Background(), core.ToolCall{}, func(core.RunEvent) error { return nil })
+	r := allowAllPermission{}.Decide(context.Background(), core.ToolCall{}, core.ActionUnknown, func(core.RunEvent) error { return nil })
 	if !r.Allow {
 		t.Errorf("inert permission must allow")
 	}
 	if r.EditedArguments != nil {
 		t.Errorf("inert permission must not edit arguments")
+	}
+}
+
+// --- action classification --------------------------------------------------
+
+// classifyingTool declares an ActionKind, so the executor must hand that kind to
+// the permission stage.
+type classifyingTool struct {
+	fakeTool
+	kind core.ActionKind
+}
+
+func (c *classifyingTool) ActionKind() core.ActionKind { return c.kind }
+
+func TestActionKindReachesPermission(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     core.ToolHandler
+		wantKind core.ActionKind
+	}{
+		{"classifier wins", &classifyingTool{fakeTool: fakeTool{name: "edit"}, kind: core.ActionEdit}, core.ActionEdit},
+		{"runs-commands defaults to command", &fakeTool{name: "shell", runsCmds: true}, core.ActionCommand},
+		{"unclassified non-command is unknown", &fakeTool{name: "mystery"}, core.ActionUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var visits []string
+			var got core.ActionKind
+			st := recordingStages(&visits, recordCfg{gotKind: &got})
+			cat := tools.NewCatalog()
+			cat.MustRegister(tc.tool)
+			ex := New(cat, st, 0)
+
+			_, err := ex.Dispatch(context.Background(), core.ToolCall{ID: "c1", ToolName: tc.tool.Descriptor().Name}, noEmit)
+			if err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+			if got != tc.wantKind {
+				t.Errorf("permission got kind %v, want %v", got, tc.wantKind)
+			}
+		})
 	}
 }
 
@@ -477,12 +518,13 @@ type recordCfg struct {
 	editArgs        map[string]interface{}
 	postBlock       string
 	postReplacement string
+	gotKind         *core.ActionKind
 }
 
 func recordingStages(visits *[]string, cfg recordCfg) Stages {
 	return Stages{
 		Pre:        recPre{visits, cfg.preBlock, cfg.preEditArgs},
-		Permission: recPerm{visits, cfg.denyPermission, cfg.editArgs},
+		Permission: recPerm{visits, cfg.denyPermission, cfg.editArgs, cfg.gotKind},
 		Sandbox:    recSandbox{visits},
 		Post:       recPost{visits, cfg.postBlock, cfg.postReplacement},
 	}
@@ -500,13 +542,17 @@ func (r recPre) PreCheck(context.Context, core.ToolCall) core.StageDecision {
 }
 
 type recPerm struct {
-	visits *[]string
-	deny   string
-	edit   map[string]interface{}
+	visits  *[]string
+	deny    string
+	edit    map[string]interface{}
+	gotKind *core.ActionKind
 }
 
-func (r recPerm) Decide(context.Context, core.ToolCall, func(core.RunEvent) error) core.PermissionResult {
+func (r recPerm) Decide(_ context.Context, _ core.ToolCall, kind core.ActionKind, _ func(core.RunEvent) error) core.PermissionResult {
 	*r.visits = append(*r.visits, "permission")
+	if r.gotKind != nil {
+		*r.gotKind = kind
+	}
 	if r.deny != "" {
 		return core.PermissionResult{Allow: false, Reason: r.deny}
 	}

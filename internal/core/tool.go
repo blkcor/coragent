@@ -24,6 +24,34 @@ type ToolHandler interface {
 	RunsCommands() bool
 }
 
+// ActionKind classifies what a tool call does to the machine's state, so the
+// soft permission gate can apply mode-aware decisions: plan mode blocks every
+// mutating kind and lets reads through; auto-accept-edits allows only edits.
+type ActionKind int
+
+const (
+	// ActionUnknown means the action's effect on state could not be determined.
+	// Plan mode treats it as state-changing and blocks it, erring on the safe side.
+	ActionUnknown ActionKind = iota
+
+	// ActionRead is a read-only action with no state change.
+	ActionRead
+
+	// ActionEdit changes files on disk (write, edit).
+	ActionEdit
+
+	// ActionCommand runs a shell command and may change arbitrary state.
+	ActionCommand
+)
+
+// ActionClassifier is the optional interface a ToolHandler implements to declare
+// its ActionKind. It is queried by type assertion, so existing handlers that do
+// not implement it keep working — the executor falls back to RunsCommands and
+// otherwise ActionUnknown.
+type ActionClassifier interface {
+	ActionKind() ActionKind
+}
+
 // StageDecision is the verdict of a hard gate (PreToolCheck / PostToolCheck).
 // A hard block is unconditional: the model has no way to override it.
 type StageDecision struct {
@@ -66,10 +94,11 @@ type PreToolCheck interface {
 }
 
 // Permission is the soft human-in-the-loop gate (Phase 3 arms it). Phase 2 ships
-// an inert allow-everything placeholder. It is handed the same live emit stream
-// the frontend drains, so a real prompt can reach the human and block on a reply.
+// an inert allow-everything placeholder. It is handed the call's ActionKind so it
+// can apply mode-aware decisions, plus the same live emit stream the frontend
+// drains, so a real prompt can reach the human and block on a reply.
 type Permission interface {
-	Decide(ctx context.Context, call ToolCall, emit func(RunEvent) error) PermissionResult
+	Decide(ctx context.Context, call ToolCall, kind ActionKind, emit func(RunEvent) error) PermissionResult
 }
 
 // Sandbox is the OS-confinement stage for command execution (Phase 5 arms it).

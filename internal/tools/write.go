@@ -33,6 +33,8 @@ func (WriteFile) Descriptor() core.Tool {
 
 func (WriteFile) RunsCommands() bool { return false }
 
+func (WriteFile) ActionKind() core.ActionKind { return core.ActionEdit }
+
 func (WriteFile) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	path, ok := stringArg(args, "path")
 	if !ok || path == "" {

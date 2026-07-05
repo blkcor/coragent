@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/blkcor/coragent/internal/core"
 )
 
 // --- read_file --------------------------------------------------------------
@@ -319,6 +321,30 @@ func TestFindFilesNoMatchAndBadRoot(t *testing.T) {
 		"pattern": "*.go", "root": filepath.Join(dir, "does-not-exist"),
 	}); err == nil {
 		t.Errorf("bad root must return an error")
+	}
+}
+
+// --- action classification --------------------------------------------------
+
+func TestBuiltinActionKinds(t *testing.T) {
+	cases := []struct {
+		tool core.ActionClassifier
+		want core.ActionKind
+	}{
+		{ReadFile{}, core.ActionRead},
+		{SearchContent{}, core.ActionRead},
+		{FindFiles{}, core.ActionRead},
+		{WriteFile{}, core.ActionEdit},
+		{EditFile{}, core.ActionEdit},
+		{ShellCommand{}, core.ActionCommand},
+	}
+	for _, tc := range cases {
+		name := tc.tool.(core.ToolHandler).Descriptor().Name
+		t.Run(name, func(t *testing.T) {
+			if got := tc.tool.ActionKind(); got != tc.want {
+				t.Errorf("%s ActionKind = %v, want %v", name, got, tc.want)
+			}
+		})
 	}
 }
 

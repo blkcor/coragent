@@ -20,6 +20,24 @@ type Settings struct {
 
 	// Hooks configures external command hooks.
 	Hooks []HookSettings `json:"hooks,omitempty"`
+
+	// Permission configures the soft human-in-the-loop gate: starting mode and the
+	// allow/deny rule lists.
+	Permission *PermissionSettings `json:"permission,omitempty"`
+}
+
+// PermissionSettings configures the permission engine. Each allow/deny entry is a
+// "<kind>:<match>" string (e.g. "command:git status", "edit:/path"), so typed
+// rules live in a flat JSON list.
+type PermissionSettings struct {
+	// Mode is the starting mode: default, auto-accept-edits, plan, or bypass.
+	Mode string `json:"mode,omitempty"`
+
+	// Allow lists rules that run an action without asking.
+	Allow []string `json:"allow,omitempty"`
+
+	// Deny lists rules that refuse an action without asking. Deny beats allow.
+	Deny []string `json:"deny,omitempty"`
 }
 
 // ModelSettings configures the model backend.
@@ -68,6 +86,9 @@ func Defaults() Settings {
 			Temperature:         &temperature,
 			RetryMax:            &retryMax,
 			RetryInitialBackoff: &retryBackoff,
+		},
+		Permission: &PermissionSettings{
+			Mode: "default",
 		},
 	}
 }
@@ -121,8 +142,54 @@ func loadHomeSettings() (Settings, error) {
 
 // loadProjectSettings loads from .coragent/settings.json in current directory
 func loadProjectSettings() (Settings, error) {
-	path := filepath.Join(".coragent", "settings.json")
-	return loadFromFile(path)
+	return loadFromFile(ProjectSettingsPath())
+}
+
+// ProjectSettingsPath is the project-local settings file path, where remembered
+// permission rules are persisted by default.
+func ProjectSettingsPath() string {
+	return filepath.Join(".coragent", "settings.json")
+}
+
+// AppendPermissionRule durably records a remembered rule by read-modify-write of
+// the settings file at path: it loads the current file (treating a missing file
+// as empty), appends the "<kind>:<match>" rule to the allow or deny list, and
+// writes the whole struct back so unrelated settings are preserved. Parent
+// directories are created as needed.
+func AppendPermissionRule(path string, allow bool, rule string) error {
+	var settings Settings
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if jerr := json.Unmarshal(data, &settings); jerr != nil {
+			return fmt.Errorf("failed to parse %s: %w", path, jerr)
+		}
+	case os.IsNotExist(err):
+		// Fresh file: start from an empty struct.
+	default:
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	if settings.Permission == nil {
+		settings.Permission = &PermissionSettings{}
+	}
+	if allow {
+		settings.Permission.Allow = append(settings.Permission.Allow, rule)
+	} else {
+		settings.Permission.Deny = append(settings.Permission.Deny, rule)
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode settings: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("failed to create settings directory: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return nil
 }
 
 // loadFromFile loads and validates settings from a specific file path
@@ -205,6 +272,19 @@ func merge(dst, src Settings) Settings {
 	}
 	if src.Hooks != nil {
 		dst.Hooks = mergeHooks(dst.Hooks, src.Hooks)
+	}
+	if src.Permission != nil {
+		if dst.Permission == nil {
+			dst.Permission = &PermissionSettings{}
+		}
+		// Mode overrides when set; an empty project mode preserves the home mode.
+		if src.Permission.Mode != "" {
+			dst.Permission.Mode = src.Permission.Mode
+		}
+		// Rule lists append home-then-project so both layers apply; deny-beats-allow
+		// at resolution time makes the order safe regardless.
+		dst.Permission.Allow = append(dst.Permission.Allow, src.Permission.Allow...)
+		dst.Permission.Deny = append(dst.Permission.Deny, src.Permission.Deny...)
 	}
 	return dst
 }

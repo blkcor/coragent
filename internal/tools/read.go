@@ -35,6 +35,8 @@ func (ReadFile) Descriptor() core.Tool {
 
 func (ReadFile) RunsCommands() bool { return false }
 
+func (ReadFile) ActionKind() core.ActionKind { return core.ActionRead }
+
 func (ReadFile) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	path, ok := stringArg(args, "path")
 	if !ok || path == "" {

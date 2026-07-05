@@ -312,3 +312,139 @@ func TestLoadFromFile_InvalidHookSettings(t *testing.T) {
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
+
+// --- permission settings ----------------------------------------------------
+
+func TestDefaults_PermissionMode(t *testing.T) {
+	settings := Defaults()
+	if settings.Permission == nil {
+		t.Fatal("expected default permission settings")
+	}
+	if settings.Permission.Mode != "default" {
+		t.Errorf("expected default mode 'default', got %q", settings.Permission.Mode)
+	}
+	if len(settings.Permission.Allow) != 0 || len(settings.Permission.Deny) != 0 {
+		t.Errorf("expected empty default rule lists, got allow=%v deny=%v",
+			settings.Permission.Allow, settings.Permission.Deny)
+	}
+}
+
+func TestLoadFromFile_PermissionSection(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.json")
+	content := `{
+		"permission": {
+			"mode": "plan",
+			"allow": ["command:git status"],
+			"deny": ["command:rm"]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	settings, err := loadFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if settings.Permission == nil {
+		t.Fatal("expected permission settings parsed")
+	}
+	if settings.Permission.Mode != "plan" {
+		t.Errorf("expected mode plan, got %q", settings.Permission.Mode)
+	}
+	if len(settings.Permission.Allow) != 1 || settings.Permission.Allow[0] != "command:git status" {
+		t.Errorf("expected one allow rule, got %v", settings.Permission.Allow)
+	}
+	if len(settings.Permission.Deny) != 1 || settings.Permission.Deny[0] != "command:rm" {
+		t.Errorf("expected one deny rule, got %v", settings.Permission.Deny)
+	}
+}
+
+func TestMerge_PermissionModeOverrideAndListAppend(t *testing.T) {
+	home := Settings{
+		Permission: &PermissionSettings{
+			Mode:  "default",
+			Allow: []string{"command:git status"},
+			Deny:  []string{"command:rm -rf"},
+		},
+	}
+	project := Settings{
+		Permission: &PermissionSettings{
+			Mode:  "auto-accept-edits",
+			Allow: []string{"command:ls"},
+			Deny:  []string{"command:curl"},
+		},
+	}
+
+	merged := merge(home, project)
+
+	if merged.Permission.Mode != "auto-accept-edits" {
+		t.Errorf("project mode must win, got %q", merged.Permission.Mode)
+	}
+	// Lists append home-then-project (both layers apply).
+	wantAllow := []string{"command:git status", "command:ls"}
+	wantDeny := []string{"command:rm -rf", "command:curl"}
+	if strings.Join(merged.Permission.Allow, "|") != strings.Join(wantAllow, "|") {
+		t.Errorf("allow lists must append home-then-project, got %v", merged.Permission.Allow)
+	}
+	if strings.Join(merged.Permission.Deny, "|") != strings.Join(wantDeny, "|") {
+		t.Errorf("deny lists must append home-then-project, got %v", merged.Permission.Deny)
+	}
+}
+
+func TestMerge_PermissionEmptyModePreservesExisting(t *testing.T) {
+	home := Settings{Permission: &PermissionSettings{Mode: "bypass"}}
+	project := Settings{Permission: &PermissionSettings{Allow: []string{"command:ls"}}}
+
+	merged := merge(home, project)
+	if merged.Permission.Mode != "bypass" {
+		t.Errorf("empty project mode must preserve home mode, got %q", merged.Permission.Mode)
+	}
+}
+
+func TestAppendPermissionRule_PreservesUnrelated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	content := `{
+		"model": {"name": "deepseek-chat"},
+		"permission": {"mode": "default", "allow": ["command:ls"]}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AppendPermissionRule(path, true, "command:git status"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	reloaded, err := loadFromFile(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	// Unrelated settings preserved.
+	if reloaded.Model == nil || reloaded.Model.Name != "deepseek-chat" {
+		t.Errorf("model settings must be preserved, got %+v", reloaded.Model)
+	}
+	// New rule appended alongside the existing one.
+	want := []string{"command:ls", "command:git status"}
+	if strings.Join(reloaded.Permission.Allow, "|") != strings.Join(want, "|") {
+		t.Errorf("allow rules = %v, want %v", reloaded.Permission.Allow, want)
+	}
+}
+
+func TestAppendPermissionRule_DenyAndCreateWhenMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "settings.json")
+
+	if err := AppendPermissionRule(path, false, "command:rm"); err != nil {
+		t.Fatalf("append to missing file: %v", err)
+	}
+
+	reloaded, err := loadFromFile(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Permission == nil || len(reloaded.Permission.Deny) != 1 || reloaded.Permission.Deny[0] != "command:rm" {
+		t.Errorf("deny rule must be persisted in a freshly created file, got %+v", reloaded.Permission)
+	}
+}
