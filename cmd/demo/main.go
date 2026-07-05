@@ -137,10 +137,15 @@ func runInteractive() int {
 	fmt.Printf("Using real endpoint: %s (model %s)\n", settings.Model.BaseURL, settings.Model.Name)
 	fmt.Println(`Multi-turn chat. Type "exit" or "quit" (or Ctrl-D) to stop.`)
 
-	session := agent.NewSession(agent.SessionConfig{
-		Provider:     p,
-		SystemPrompt: "You are a concise coding assistant.",
+	session, err := agent.NewSessionWithError(agent.SessionConfig{
+		Provider:      p,
+		SystemPrompt:  "You are a concise coding assistant.",
+		ExternalHooks: settings.ExternalHooks(),
 	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create session: %v\n", err)
+		return 1
+	}
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,6 +197,216 @@ func TestBackpressureNoLossThenCancelUnblocks(t *testing.T) {
 	}
 }
 
+func TestPromptSubmitHookBlocksBeforeProviderCall(t *testing.T) {
+	p := &recordingProvider{}
+	s := agent.NewSession(agent.SessionConfig{
+		Provider: p,
+		Hooks: []agent.HookRegistration{{
+			Name:   "block",
+			Moment: agent.HookPromptSubmit,
+			Handler: func(context.Context, agent.HookEvent) agent.HookVerdict {
+				return agent.HookVerdict{Block: true, Reason: "forbidden prompt"}
+			},
+		}},
+	})
+
+	ch, err := s.Run(context.Background(), "do it")
+	if err != nil {
+		t.Fatalf("run should start: %v", err)
+	}
+	events := drain(t, ch)
+	if p.calls() != 0 {
+		t.Fatalf("provider must not be called after prompt block")
+	}
+	var sawHook, sawFailed bool
+	for _, ev := range events {
+		if ev.Type == agent.HookOutcomeEvent && ev.HookOutcome.Action == agent.HookBlocked {
+			sawHook = true
+		}
+		if ev.Type == agent.RunFinishedEvent && ev.RunFinished.Reason == agent.StopFailed {
+			sawFailed = true
+		}
+	}
+	if !sawHook || !sawFailed {
+		t.Fatalf("expected hook outcome and failed terminal, got %+v", events)
+	}
+}
+
+func TestPromptSubmitHookInjectionVisibleToProvider(t *testing.T) {
+	p := &recordingProvider{reply: []agent.RunEvent{{Type: agent.ReplyEndedEvent, ReplyEnded: &agent.ReplyEnded{Reason: agent.Finished}}}}
+	s := agent.NewSession(agent.SessionConfig{
+		Provider:     p,
+		SystemPrompt: "sys",
+		Hooks: []agent.HookRegistration{{
+			Name:   "inject",
+			Moment: agent.HookPromptSubmit,
+			Handler: func(context.Context, agent.HookEvent) agent.HookVerdict {
+				return agent.HookVerdict{InjectedContext: []string{"repo policy"}}
+			},
+		}},
+	})
+
+	ch, err := s.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	drain(t, ch)
+	conv := p.lastConversation()
+	if len(conv.Turns) < 3 || conv.Turns[1].Role != "system" || conv.Turns[1].Content != "repo policy" {
+		t.Fatalf("injected context should precede provider call, got %+v", conv.Turns)
+	}
+	for _, turn := range s.Conversation().Turns {
+		if turn.Content == "repo policy" {
+			t.Fatalf("prompt-submit injection must not persist in session history: %+v", s.Conversation().Turns)
+		}
+	}
+}
+
+func TestSessionStartHookBlockAndInjection(t *testing.T) {
+	_, err := agent.NewSessionWithError(agent.SessionConfig{
+		Provider: &recordingProvider{},
+		Hooks: []agent.HookRegistration{{
+			Name:   "block-start",
+			Moment: agent.HookSessionStart,
+			Handler: func(context.Context, agent.HookEvent) agent.HookVerdict {
+				return agent.HookVerdict{Block: true, Reason: "bad dir"}
+			},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "bad dir") {
+		t.Fatalf("session-start block should surface, got %v", err)
+	}
+
+	p := &recordingProvider{reply: []agent.RunEvent{{Type: agent.ReplyEndedEvent, ReplyEnded: &agent.ReplyEnded{Reason: agent.Finished}}}}
+	s, err := agent.NewSessionWithError(agent.SessionConfig{
+		Provider: p,
+		Hooks: []agent.HookRegistration{{
+			Name:   "inject-start",
+			Moment: agent.HookSessionStart,
+			Handler: func(context.Context, agent.HookEvent) agent.HookVerdict {
+				return agent.HookVerdict{InjectedContext: []string{"standing context"}}
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("session should start: %v", err)
+	}
+	ch, _ := s.Run(context.Background(), "hello")
+	drain(t, ch)
+	conv := p.lastConversation()
+	if len(conv.Turns) < 2 || conv.Turns[1].Content != "standing context" {
+		t.Fatalf("session-start injection missing from provider conversation: %+v", conv.Turns)
+	}
+}
+
+func TestSessionStopHookSurfacesButDoesNotChangeCompletion(t *testing.T) {
+	p := testutil.NewFakeProvider([]testutil.ScriptedReply{{TextDeltas: []string{"ok"}, EndReason: agent.Finished}})
+	s := agent.NewSession(agent.SessionConfig{
+		Provider: p,
+		Hooks: []agent.HookRegistration{{
+			Name:   "stop",
+			Moment: agent.HookSessionStop,
+			Handler: func(context.Context, agent.HookEvent) agent.HookVerdict {
+				return agent.HookVerdict{Block: true, Reason: "cleanup failed"}
+			},
+		}},
+	})
+	ch, _ := s.Run(context.Background(), "hello")
+	events := drain(t, ch)
+	last := events[len(events)-1]
+	for _, ev := range events {
+		if ev.Type == agent.HookOutcomeEvent && ev.HookOutcome.Moment == agent.HookSessionStop {
+			t.Fatalf("session-stop hook must not run at normal run completion: %+v", events)
+		}
+	}
+	if last.RunFinished == nil || last.RunFinished.Reason != agent.StopCompleted {
+		t.Fatalf("session-stop block must not un-complete the run, got %+v", last)
+	}
+	if err := s.Close(context.Background()); err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("close should return session-stop failure, got %v", err)
+	}
+	if _, err := s.Run(context.Background(), "again"); err != agent.ErrSessionClosed {
+		t.Fatalf("closed session should refuse runs, got %v", err)
+	}
+}
+
+func TestRunFinishedHookRunsBeforeTerminalAndDoesNotChangeCompletion(t *testing.T) {
+	p := testutil.NewFakeProvider([]testutil.ScriptedReply{{TextDeltas: []string{"ok"}, EndReason: agent.Finished}})
+	s := agent.NewSession(agent.SessionConfig{
+		Provider: p,
+		Hooks: []agent.HookRegistration{{
+			Name:   "notify",
+			Moment: agent.HookRunFinished,
+			Handler: func(_ context.Context, ev agent.HookEvent) agent.HookVerdict {
+				if ev.RunFinished == nil || ev.RunFinished.Reason != agent.StopCompleted {
+					return agent.HookVerdict{Block: true, Reason: "missing completed result"}
+				}
+				return agent.HookVerdict{Block: true, Reason: "notification failed"}
+			},
+		}},
+	})
+
+	ch, err := s.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("run should start: %v", err)
+	}
+	events := drain(t, ch)
+
+	if len(events) < 2 {
+		t.Fatalf("expected hook outcome and terminal events, got %+v", events)
+	}
+	hook := events[len(events)-2]
+	if hook.Type != agent.HookOutcomeEvent || hook.HookOutcome.Moment != agent.HookRunFinished || hook.HookOutcome.Action != agent.HookBlocked {
+		t.Fatalf("run-finished hook outcome should precede terminal event, got %+v", events)
+	}
+	last := events[len(events)-1]
+	if last.RunFinished == nil || last.RunFinished.Reason != agent.StopCompleted {
+		t.Fatalf("run-finished hook must not un-complete the run, got %+v", last)
+	}
+}
+
+func TestRunFinishedHookRunsAfterPromptSubmitBlock(t *testing.T) {
+	p := &recordingProvider{}
+	var sawFailed bool
+	s := agent.NewSession(agent.SessionConfig{
+		Provider: p,
+		Hooks: []agent.HookRegistration{
+			{
+				Name:   "block-prompt",
+				Moment: agent.HookPromptSubmit,
+				Handler: func(context.Context, agent.HookEvent) agent.HookVerdict {
+					return agent.HookVerdict{Block: true, Reason: "forbidden prompt"}
+				},
+			},
+			{
+				Name:   "notify",
+				Moment: agent.HookRunFinished,
+				Handler: func(_ context.Context, ev agent.HookEvent) agent.HookVerdict {
+					sawFailed = ev.RunFinished != nil && ev.RunFinished.Reason == agent.StopFailed
+					return agent.HookVerdict{}
+				},
+			},
+		},
+	})
+
+	ch, err := s.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("run should start: %v", err)
+	}
+	events := drain(t, ch)
+
+	if p.calls() != 0 {
+		t.Fatalf("provider must not be called after prompt block")
+	}
+	if !sawFailed {
+		t.Fatalf("run-finished hook should observe prompt-block failure, got %+v", events)
+	}
+	last := events[len(events)-1]
+	if last.RunFinished == nil || last.RunFinished.Reason != agent.StopFailed {
+		t.Fatalf("terminal event should preserve prompt-block failure, got %+v", last)
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func typesOf(events []agent.RunEvent) []agent.RunEventType {
@@ -228,4 +439,43 @@ func (blockingForeverProvider) StreamReply(ctx context.Context, _ agent.Conversa
 		ch <- agent.RunEvent{Type: agent.ErrorEvent, Error: ctx.Err()}
 	}()
 	return ch
+}
+
+type recordingProvider struct {
+	mu    sync.Mutex
+	n     int
+	last  agent.Conversation
+	reply []agent.RunEvent
+}
+
+func (p *recordingProvider) StreamReply(_ context.Context, conv agent.Conversation, _ []agent.Tool, _ agent.StreamOptions) <-chan agent.RunEvent {
+	p.mu.Lock()
+	p.n++
+	p.last = conv
+	reply := append([]agent.RunEvent(nil), p.reply...)
+	p.mu.Unlock()
+
+	ch := make(chan agent.RunEvent, len(reply)+1)
+	go func() {
+		defer close(ch)
+		for _, ev := range reply {
+			ch <- ev
+		}
+		if len(reply) == 0 {
+			ch <- agent.RunEvent{Type: agent.ReplyEndedEvent, ReplyEnded: &agent.ReplyEnded{Reason: agent.Finished}}
+		}
+	}()
+	return ch
+}
+
+func (p *recordingProvider) calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.n
+}
+
+func (p *recordingProvider) lastConversation() agent.Conversation {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last
 }

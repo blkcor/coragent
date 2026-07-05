@@ -17,8 +17,8 @@
 Phase 4 delivers **hooks**: the hard, unconditional restraint layer of the
 tool-execution chokepoint (`../architecture.md` §6). A hook is a rule that fires
 at a moment in the agent's lifecycle — before a tool runs, after a tool runs,
-when the user submits a prompt, when a session starts, when a session stops —
-and that can **stop an action outright**.
+when the user submits a prompt, when a run finishes, when a session starts, when
+a session stops — and that can **stop an action outright**.
 
 The defining contrast, stated once and kept crisp everywhere:
 
@@ -67,8 +67,8 @@ Together with the OS sandbox (`prd-phase-5-sandbox.md`), hooks form Milestone
   human prompt bypassed; the model receives an error it cannot override.
 - A blocking hook **short-circuits everything downstream** — a refused call never
   reaches permission, the sandbox, or the tool itself.
-- **Five lifecycle moments** are covered: before a tool, after a tool, on prompt
-  submit, on session start, on session stop.
+- **Six lifecycle moments** are covered: before a tool, after a tool, on prompt
+  submit, on run finished, on session start, on session stop.
 - Hooks are **scopable** by tool name, by pattern over the relevant detail, or
   both combined (both must match); an unscoped hook fires for every action of its
   moment.
@@ -160,6 +160,16 @@ behavioral — no Go types or code.
 **Acceptance Criteria:**
 - [ ] A blocking session-start hook aborts startup; no turns run.
 - [ ] A session-stop hook runs teardown; a stop-block is recorded but cannot un-stop the session.
+- [ ] Build, typecheck, and unit tests pass
+
+### US-008A: Hook when a run finishes
+
+**Description:** As an operator, I want a hook that fires when an agent run reaches its terminal outcome, so that I can trigger local completion notifications or other post-run side effects without coupling them to a frontend.
+
+**Acceptance Criteria:**
+- [ ] A run-finished hook runs after the run outcome is known and before the terminal event is emitted.
+- [ ] The hook receives the run's terminal outcome and current conversation snapshot.
+- [ ] A run-finished hook block or failure is surfaced but cannot change the already-determined run outcome.
 - [ ] Build, typecheck, and unit tests pass
 
 ### US-009: Scope a hook to a named tool
@@ -258,7 +268,7 @@ behavioral — no Go types or code.
 
 **Acceptance Criteria:**
 - [ ] An in-process hook that blocks, annotates, or injects behaves identically to the equivalent external hook.
-- [ ] All five moments and all scope forms are available to in-process hooks.
+- [ ] All six moments and all scope forms are available to in-process hooks.
 - [ ] Build, typecheck, and unit tests pass
 
 ### US-020: Both flavors coexist in a defined order
@@ -343,9 +353,9 @@ behavioral — no Go types or code.
   prompts has no effect on hooks.
 - **FR-3** — A blocked before-the-tool call short-circuits the rest of the chain:
   permission, sandbox, and the tool body never execute for it.
-- **FR-4** — The harness supports exactly five lifecycle moments in v1: before a
-  tool runs, after a tool runs, on prompt submit, on session start, on session
-  stop.
+- **FR-4** — The harness supports exactly six lifecycle moments in v1: before a
+  tool runs, after a tool runs, on prompt submit, on run finished, on session
+  start, on session stop.
 - **FR-5** — A before-the-tool hook may refuse the call or reshape its input.
 - **FR-6** — An after-the-tool hook may inspect, replace, or reject the result
   before the model sees it.
@@ -353,6 +363,9 @@ behavioral — no Go types or code.
   inject standing context present before the model is called.
 - **FR-8** — A session-start hook may abort startup; a session-stop hook may run
   teardown and record a block but cannot un-stop the session.
+- **FR-8A** — A run-finished hook may run post-run side effects after the
+  terminal outcome is known; a run-finished block or failure is surfaced but
+  cannot change that outcome.
 - **FR-9** — A hook may be scoped by tool name, by a pattern over the moment's
   relevant detail, or both; both must match when both are set.
 - **FR-10** — An unscoped hook fires for every action of its moment.
@@ -394,9 +407,9 @@ behavioral — no Go types or code.
 - **TUI rendering** of hook activity — `prd-phase-7-tui.md`. Phase 4 surfaces
   outcomes through the event stream and tool results; rendering is the frontend's.
 - **Subagent hook inheritance** — owned by `prd-phase-6-subagents.md`.
-- **Lifecycle moments beyond the v1 five** — notifications, subagent start/stop,
-  and context-compaction hooks are out of v1; they are additive later (§9) and the
-  v1 five do not constrain them.
+- **Lifecycle moments beyond the v1 six** — subagent start/stop and
+  context-compaction hooks are out of v1; they are additive later (§9) and the v1
+  six do not constrain them.
 - **MCP / plugin hook sources** — `../architecture.md` §1 non-goals. v1 sources
   are exactly settings (external) and SDK registration (in-process).
 
@@ -409,9 +422,9 @@ behavioral — no Go types or code.
   the already-present pass-through stages enforcing; it never adds a second path.
 - **Permission sits between the two hook stages.** A before-tool block keeps the
   call from ever reaching permission; permission and hooks never call each other.
-- **Out-of-chain moments are loop-owned.** Prompt submit, session start, and
-  session stop are invoked by the agent loop (`prd-phase-1-agent-loop.md`), not by
-  the executor chain.
+- **Out-of-chain moments are loop-owned.** Prompt submit, run finished, session
+  start, and session stop are invoked by the agent loop/session lifecycle
+  (`prd-phase-1-agent-loop.md`), not by the executor chain.
 - **Outcomes ride the existing event stream.** Hooks surface blocks, redactions,
   and injections as events; no frontend reads internal hook state.
 
@@ -473,10 +486,10 @@ Aligned with `../architecture.md` §9 and Milestone **M3 — "It's safe"**
   neither add nor edit them. The threat model is "restrain the model," not
   "restrain the operator." A future version could route them through the
   `prd-phase-5-sandbox.md` sandbox for defense-in-depth.
-- **More lifecycle moments.** Notifications, subagent start/stop (owned by
-  `prd-phase-6-subagents.md`), and a context-compaction hook (owned by the
+- **More lifecycle moments.** Subagent start/stop (owned by
+  `prd-phase-6-subagents.md`) and a context-compaction hook (owned by the
   `prd-phase-1-agent-loop.md` context manager) are natural, purely additive
-  extensions; the v1 five do not constrain them.
+  extensions; the v1 six do not constrain them.
 - **Parallel hooks.** v1 runs a moment's hooks sequentially with first-block-wins,
   matching the sequential tool execution of `../architecture.md` §7. Running
   independent non-blocking hooks concurrently is a later optimization that must

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/blkcor/coragent/internal/core"
+	"github.com/blkcor/coragent/internal/hooks"
 	"github.com/blkcor/coragent/internal/tools"
 )
 
@@ -252,6 +253,86 @@ func TestEditedArgumentsFailingValidationAreRejected(t *testing.T) {
 	}
 }
 
+func TestHookEditedArgumentsAreRevalidatedBeforePermission(t *testing.T) {
+	var visits []string
+	st := recordingStages(&visits, recordCfg{preEditArgs: map[string]interface{}{"wrong": 1}})
+	tool := &fakeTool{
+		name:   "read",
+		schema: `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`,
+		visits: &visits,
+	}
+	cat := tools.NewCatalog()
+	cat.MustRegister(tool)
+	ex := New(cat, st, 0)
+
+	res, _ := ex.Dispatch(context.Background(), core.ToolCall{
+		ID: "c1", ToolName: "read", Arguments: map[string]interface{}{"path": "ok.txt"},
+	}, noEmit)
+	if !res.IsError || !strings.Contains(res.Result, "invalid hook-edited arguments") {
+		t.Errorf("want hook edit validation error, got %+v", res)
+	}
+	if tool.executed {
+		t.Errorf("tool must not run on invalid hook-edited arguments")
+	}
+	assertOrder(t, visits, []string{"pre"})
+}
+
+func TestToolHookReplacementOutcomesEmitPerHook(t *testing.T) {
+	engine, err := hooks.New([]core.HookRegistration{
+		{
+			Name:   "first",
+			Moment: core.HookBeforeTool,
+			Handler: func(context.Context, core.HookEvent) core.HookVerdict {
+				return core.HookVerdict{Arguments: map[string]interface{}{"path": "first.txt"}}
+			},
+		},
+		{
+			Name:   "second",
+			Moment: core.HookBeforeTool,
+			Handler: func(context.Context, core.HookEvent) core.HookVerdict {
+				return core.HookVerdict{Arguments: map[string]interface{}{"path": "second.txt"}}
+			},
+		},
+	}, nil, hooks.Options{})
+	if err != nil {
+		t.Fatalf("hook engine: %v", err)
+	}
+
+	st := InertStages()
+	st.Pre = engine
+	tool := &fakeTool{
+		name:   "read",
+		schema: `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`,
+		output: "ok",
+	}
+	cat := tools.NewCatalog()
+	cat.MustRegister(tool)
+	ex := New(cat, st, 0)
+
+	var events []core.RunEvent
+	res, _ := ex.Dispatch(context.Background(), core.ToolCall{
+		ID: "c1", ToolName: "read", Arguments: map[string]interface{}{"path": "original.txt"},
+	}, func(ev core.RunEvent) error {
+		events = append(events, ev)
+		return nil
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %+v", res)
+	}
+	if tool.gotArgs["path"] != "second.txt" {
+		t.Fatalf("last replacement should feed the tool, got %v", tool.gotArgs)
+	}
+	var names []string
+	for _, ev := range events {
+		if ev.Type == core.HookOutcomeEvent {
+			names = append(names, ev.HookOutcome.HookName)
+		}
+	}
+	if strings.Join(names, ",") != "first,second" {
+		t.Fatalf("expected one outcome per replacing hook, got %v", names)
+	}
+}
+
 func TestHardPostCheckVetoTurnsSuccessIntoError(t *testing.T) {
 	var visits []string
 	st := recordingStages(&visits, recordCfg{postBlock: "secret leaked"})
@@ -268,6 +349,20 @@ func TestHardPostCheckVetoTurnsSuccessIntoError(t *testing.T) {
 		t.Errorf("the tool runs before the post-check vetoes its result")
 	}
 	assertOrder(t, visits, []string{"pre", "permission", "execute", "post"})
+}
+
+func TestHardPostCheckReplacementReachesModel(t *testing.T) {
+	var visits []string
+	st := recordingStages(&visits, recordCfg{postReplacement: "redacted"})
+	tool := &fakeTool{name: "read", output: "secret", visits: &visits}
+	cat := tools.NewCatalog()
+	cat.MustRegister(tool)
+	ex := New(cat, st, 0)
+
+	res, _ := ex.Dispatch(context.Background(), core.ToolCall{ID: "c1", ToolName: "read"}, noEmit)
+	if res.IsError || res.Result != "redacted" {
+		t.Errorf("want replaced result, got %+v", res)
+	}
 }
 
 func TestCancellationReturnsErrorResult(t *testing.T) {
@@ -376,29 +471,32 @@ func (f *fakeTool) RunsCommands() bool { return f.runsCmds }
 
 // recordCfg configures the recording stages' verdicts.
 type recordCfg struct {
-	preBlock       string
-	denyPermission string
-	editArgs       map[string]interface{}
-	postBlock      string
+	preBlock        string
+	preEditArgs     map[string]interface{}
+	denyPermission  string
+	editArgs        map[string]interface{}
+	postBlock       string
+	postReplacement string
 }
 
 func recordingStages(visits *[]string, cfg recordCfg) Stages {
 	return Stages{
-		Pre:        recPre{visits, cfg.preBlock},
+		Pre:        recPre{visits, cfg.preBlock, cfg.preEditArgs},
 		Permission: recPerm{visits, cfg.denyPermission, cfg.editArgs},
 		Sandbox:    recSandbox{visits},
-		Post:       recPost{visits, cfg.postBlock},
+		Post:       recPost{visits, cfg.postBlock, cfg.postReplacement},
 	}
 }
 
 type recPre struct {
 	visits *[]string
 	block  string
+	edit   map[string]interface{}
 }
 
 func (r recPre) PreCheck(context.Context, core.ToolCall) core.StageDecision {
 	*r.visits = append(*r.visits, "pre")
-	return core.StageDecision{Block: r.block != "", Reason: r.block}
+	return core.StageDecision{Block: r.block != "", Reason: r.block, EditedArguments: r.edit}
 }
 
 type recPerm struct {
@@ -423,12 +521,17 @@ func (r recSandbox) Run(ctx context.Context, h core.ToolHandler, args map[string
 }
 
 type recPost struct {
-	visits *[]string
-	block  string
+	visits      *[]string
+	block       string
+	replacement string
 }
 
-func (r recPost) PostCheck(context.Context, core.ToolCall, core.ToolResult) core.StageDecision {
+func (r recPost) PostCheck(_ context.Context, _ core.ToolCall, result core.ToolResult) core.StageDecision {
 	*r.visits = append(*r.visits, "post")
+	if r.replacement != "" {
+		result.Result = r.replacement
+		return core.StageDecision{ReplacementResult: &result}
+	}
 	return core.StageDecision{Block: r.block != "", Reason: r.block}
 }
 

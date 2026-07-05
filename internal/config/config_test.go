@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaults(t *testing.T) {
@@ -89,16 +90,25 @@ func TestLoadFromFile_NotFound(t *testing.T) {
 }
 
 func TestMerge_ProjectOverridesHome(t *testing.T) {
+	timeout := 100
 	home := Settings{
 		Model: &ModelSettings{
 			Name:    "home-model",
 			BaseURL: "https://home.example.com",
+		},
+		Hooks: []HookSettings{
+			{Name: "home-only", Moment: "before-tool", Command: []string{"/bin/true"}, TimeoutMillis: &timeout},
+			{Name: "shared", Moment: "before-tool", Command: []string{"/bin/true"}},
 		},
 	}
 
 	project := Settings{
 		Model: &ModelSettings{
 			Name: "project-model",
+		},
+		Hooks: []HookSettings{
+			{Name: "shared", Moment: "after-tool", Command: []string{"/bin/true"}},
+			{Name: "project-only", Moment: "prompt-submit", Command: []string{"/bin/true"}},
 		},
 	}
 
@@ -112,6 +122,18 @@ func TestMerge_ProjectOverridesHome(t *testing.T) {
 	// Home base URL preserved (project didn't override)
 	if merged.Model.BaseURL != "https://home.example.com" {
 		t.Errorf("expected home base URL preserved, got %s", merged.Model.BaseURL)
+	}
+	if len(merged.Hooks) != 3 {
+		t.Fatalf("expected home-only, overridden shared, and project-only hooks, got %+v", merged.Hooks)
+	}
+	if merged.Hooks[0].Name != "home-only" {
+		t.Errorf("non-overlapping home hook should be preserved, got %+v", merged.Hooks)
+	}
+	if merged.Hooks[1].Name != "shared" || merged.Hooks[1].Moment != "after-tool" {
+		t.Errorf("project hook should override same-name home hook in place, got %+v", merged.Hooks)
+	}
+	if merged.Hooks[2].Name != "project-only" {
+		t.Errorf("project-only hook should append, got %+v", merged.Hooks)
 	}
 }
 
@@ -233,6 +255,57 @@ func TestLoadFrom_SkipsDiscovery(t *testing.T) {
 	// Defaults merged for unset fields
 	if settings.Model.RetryMax == nil || *settings.Model.RetryMax != 3 {
 		t.Errorf("expected default retry max 3")
+	}
+}
+
+func TestLoadFromFile_HookSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.json")
+	content := `{
+		"hooks": [{
+			"name": "notify",
+			"moment": "run-finished",
+			"command": ["/bin/sh", "guard.sh"],
+			"timeout_ms": 250
+		}]
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	settings, err := loadFromFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	hooks := settings.ExternalHooks()
+	if len(hooks) != 1 {
+		t.Fatalf("want one hook, got %+v", hooks)
+	}
+	if hooks[0].Name != "notify" || hooks[0].Moment != "run-finished" || hooks[0].Timeout != 250*time.Millisecond {
+		t.Fatalf("bad hook conversion: %+v", hooks[0])
+	}
+}
+
+func TestLoadFromFile_InvalidHookSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "moment", content: `{"hooks":[{"name":"h","moment":"later","command":["/bin/true"]}]}`, want: "moment"},
+		{name: "pattern", content: `{"hooks":[{"name":"h","moment":"before-tool","command":["/bin/true"],"pattern":"["}]}`, want: "pattern"},
+		{name: "timeout", content: `{"hooks":[{"name":"h","moment":"before-tool","command":["/bin/true"],"timeout_ms":-1}]}`, want: "timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(path, []byte(tc.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadFromFile(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), path) {
+				t.Fatalf("want error naming %q and path, got %v", tc.want, err)
+			}
+		})
 	}
 }
 

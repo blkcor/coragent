@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
+
+	"github.com/blkcor/coragent/internal/core"
 )
 
 // Settings configures the coragent harness.
@@ -14,6 +17,9 @@ import (
 type Settings struct {
 	// Model configures the default model backend.
 	Model *ModelSettings `json:"model,omitempty"`
+
+	// Hooks configures external command hooks.
+	Hooks []HookSettings `json:"hooks,omitempty"`
 }
 
 // ModelSettings configures the model backend.
@@ -38,6 +44,16 @@ type ModelSettings struct {
 
 	// RetryInitialBackoff is the initial backoff duration in milliseconds.
 	RetryInitialBackoff *int `json:"retry_initial_backoff_ms,omitempty"`
+}
+
+// HookSettings configures one external command hook in settings.
+type HookSettings struct {
+	Name          string   `json:"name,omitempty"`
+	Moment        string   `json:"moment,omitempty"`
+	Command       []string `json:"command,omitempty"`
+	Tool          string   `json:"tool,omitempty"`
+	Pattern       string   `json:"pattern,omitempty"`
+	TimeoutMillis *int     `json:"timeout_ms,omitempty"`
 }
 
 // Defaults returns a Settings with documented default values.
@@ -128,6 +144,9 @@ func loadFromFile(path string) (Settings, error) {
 	if err := resolveEnvVars(&settings, path); err != nil {
 		return Settings{}, err
 	}
+	if err := validateHooks(settings.Hooks, path); err != nil {
+		return Settings{}, err
+	}
 
 	return settings, nil
 }
@@ -184,7 +203,79 @@ func merge(dst, src Settings) Settings {
 			dst.Model.RetryInitialBackoff = src.Model.RetryInitialBackoff
 		}
 	}
+	if src.Hooks != nil {
+		dst.Hooks = mergeHooks(dst.Hooks, src.Hooks)
+	}
 	return dst
+}
+
+func mergeHooks(dst, src []HookSettings) []HookSettings {
+	out := append([]HookSettings(nil), dst...)
+	byName := make(map[string]int)
+	for i, h := range out {
+		if h.Name != "" {
+			byName[h.Name] = i
+		}
+	}
+	for _, h := range src {
+		if h.Name != "" {
+			if i, ok := byName[h.Name]; ok {
+				out[i] = h
+				continue
+			}
+			byName[h.Name] = len(out)
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+func validateHooks(hooks []HookSettings, filePath string) error {
+	for i, h := range hooks {
+		name := h.Name
+		if name == "" {
+			name = fmt.Sprintf("hook[%d]", i)
+		}
+		switch core.HookMoment(h.Moment) {
+		case core.HookSessionStart, core.HookPromptSubmit, core.HookBeforeTool, core.HookAfterTool, core.HookRunFinished, core.HookSessionStop:
+		default:
+			return fmt.Errorf("invalid hook %q in %s: invalid moment %q", name, filePath, h.Moment)
+		}
+		if len(h.Command) == 0 || h.Command[0] == "" {
+			return fmt.Errorf("invalid hook %q in %s: command is required", name, filePath)
+		}
+		if h.Pattern != "" {
+			if _, err := regexp.Compile(h.Pattern); err != nil {
+				return fmt.Errorf("invalid hook %q in %s: invalid pattern: %w", name, filePath, err)
+			}
+		}
+		if h.TimeoutMillis != nil && *h.TimeoutMillis < 0 {
+			return fmt.Errorf("invalid hook %q in %s: timeout_ms must be non-negative", name, filePath)
+		}
+	}
+	return nil
+}
+
+// ExternalHooks converts settings hook declarations to the core engine shape.
+func (s Settings) ExternalHooks() []core.ExternalHook {
+	out := make([]core.ExternalHook, 0, len(s.Hooks))
+	for _, h := range s.Hooks {
+		timeout := time.Duration(0)
+		if h.TimeoutMillis != nil {
+			timeout = time.Duration(*h.TimeoutMillis) * time.Millisecond
+		}
+		out = append(out, core.ExternalHook{
+			Name:    h.Name,
+			Moment:  core.HookMoment(h.Moment),
+			Command: append([]string(nil), h.Command...),
+			Scope: core.HookScope{
+				ToolName: h.Tool,
+				Pattern:  h.Pattern,
+			},
+			Timeout: timeout,
+		})
+	}
+	return out
 }
 
 // FileNotFoundError indicates a settings file was not found

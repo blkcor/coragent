@@ -19,13 +19,14 @@ func TestNewSeedsSystemTurn(t *testing.T) {
 
 func TestAppendOrder(t *testing.T) {
 	m := New("sys")
+	m.AppendSystem("policy")
 	m.AppendUser("hello")
 	m.AppendAssistant("on it", []core.ToolCall{{ID: "c1", ToolName: "read", Arguments: map[string]interface{}{"path": "a.txt"}}})
 	m.AppendToolResults([]core.ToolResult{{ToolCallID: "c1", Result: "ok"}})
 	m.AppendAssistant("done", nil)
 
 	snap := m.Snapshot()
-	wantRoles := []string{"system", "user", "assistant", "tool", "assistant"}
+	wantRoles := []string{"system", "system", "user", "assistant", "tool", "assistant"}
 	if len(snap.Turns) != len(wantRoles) {
 		t.Fatalf("want %d turns, got %d", len(wantRoles), len(snap.Turns))
 	}
@@ -34,10 +35,13 @@ func TestAppendOrder(t *testing.T) {
 			t.Errorf("turn %d: want role %q, got %q", i, role, snap.Turns[i].Role)
 		}
 	}
-	if snap.Turns[2].ToolCalls[0].ToolName != "read" {
+	if snap.Turns[1].Content != "policy" {
+		t.Errorf("system injection should be preserved")
+	}
+	if snap.Turns[3].ToolCalls[0].ToolName != "read" {
 		t.Errorf("assistant turn should carry the tool call")
 	}
-	if snap.Turns[3].ToolResults[0].Result != "ok" {
+	if snap.Turns[4].ToolResults[0].Result != "ok" {
 		t.Errorf("tool turn should carry the result")
 	}
 }
