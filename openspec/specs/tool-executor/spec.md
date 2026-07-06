@@ -6,20 +6,20 @@ TBD - created by archiving change phase-2-tools-executor. Update Purpose after a
 ### Requirement: Single ordered execution chain
 
 The executor SHALL route every tool call — built-in or custom — through exactly
-one ordered chain of stages: hard pre-checks → human permission → sandbox →
-execute → hard post-checks. No tool call SHALL reach the user's machine by any
-other route. The executor SHALL fulfil the Phase 1 `Dispatcher` seam without
+one ordered chain of stages: before-tool hard hooks → human permission → sandbox
+→ execute → after-tool hard hooks. No tool call SHALL reach the user's machine by
+any other route. The executor SHALL fulfil the existing `Dispatcher` seam without
 changing its signature.
 
 #### Scenario: Every capability travels the one path
 
-- **WHEN** a read, write, edit, content-search, file-find, or shell call is dispatched
+- **WHEN** a read, write, edit, content-search, file-find, shell, or custom tool call is dispatched
 - **THEN** it passes through the same ordered chain and none has a private bypass route
 
 #### Scenario: Fixed order is observable
 
 - **WHEN** a shell call is dispatched through an instrumented chain
-- **THEN** the stages run in exactly this order — hard pre-checks → human permission → sandbox → execute → hard post-checks — and the order is asserted in tests, not merely intended
+- **THEN** the stages run in exactly this order — before-tool hard hooks → human permission → sandbox → execute → after-tool hard hooks — and the order is asserted in tests, not merely intended
 
 ### Requirement: Sandbox routing for command execution only
 
@@ -39,28 +39,34 @@ edit, content-search, and file-find calls.
 
 ### Requirement: Inert placeholder stages
 
-The hard-check and sandbox stages SHALL ship as pass-through placeholders —
-never-block hard checks, run-directly sandbox — that a later phase replaces
-without altering the path. Each placeholder SHALL be a drop-in replacement. The
-permission stage SHALL be a real human-in-the-loop gate rather than an
-allow-everything placeholder.
+The sandbox stage SHALL remain a drop-in stage supplied by its own phase, the
+permission stage SHALL be a real human-in-the-loop gate, and the hard pre-check
+and hard post-check stage slots SHALL be filled by the hooks capability without
+altering the executor path. A session with no matching hooks SHALL pass through
+the hard stages exactly as the Phase 2 inert placeholders did.
 
-#### Scenario: Placeholders produce the tool's own result
+#### Scenario: No configured hooks preserves pass-through behavior
 
-- **WHEN** a read, edit, or shell call runs through the chain with the hard-check and sandbox placeholders in place and the permission stage allowing
-- **THEN** the result is identical to what the tool would produce on its own
+- **WHEN** a read, edit, or shell call runs through the chain with no matching hooks configured and the permission stage allowing
+- **THEN** the hard hook stages allow the call and the result is identical to what the tool would produce on its own
 
 ### Requirement: Hard pre-check short-circuit
 
-When a hard pre-check blocks a call, the executor SHALL prevent permission, the
-sandbox, and the tool's work from running, and SHALL return an error result
-carrying the block's reason. There SHALL be no path for the model to override a
-hard block.
+When a before-tool hard hook blocks a call, the executor SHALL prevent
+permission, the sandbox, and the tool's work from running, and SHALL return an
+error result carrying the block's reason. There SHALL be no path for the model or
+permission bypass mode to override a hard block.
 
 #### Scenario: Pre-check block stops all downstream work
 
-- **WHEN** a hard pre-check blocks a call
+- **WHEN** a before-tool hard hook blocks a call
 - **THEN** permission, sandbox, and the tool never run, and the result is an error carrying the block's reason
+
+#### Scenario: Permission bypass does not affect hard pre-check
+
+- **WHEN** permission is configured to bypass human prompts
+- **WHEN** a before-tool hard hook blocks a call
+- **THEN** the call is still blocked before permission, sandbox, or tool execution
 
 ### Requirement: Permission denial short-circuit
 
@@ -86,13 +92,20 @@ arguments, not the originals.
 
 ### Requirement: Hard post-check veto
 
-When a hard post-check blocks an otherwise-successful result, the executor SHALL
-turn that result into an error carrying the block's reason before handing it back.
+The executor SHALL apply after-tool hard hook verdicts before handing a tool
+result back to the model. A blocking verdict SHALL turn the result into an error
+carrying the block's reason, and a replacement verdict SHALL replace the result
+content the model receives.
 
 #### Scenario: Post-check turns success into a blocked error
 
-- **WHEN** a hard post-check blocks an otherwise-successful result
+- **WHEN** an after-tool hard hook blocks an otherwise-successful result
 - **THEN** the result handed back to the model becomes an error carrying the block's reason
+
+#### Scenario: Post-check replacement reaches the model
+
+- **WHEN** an after-tool hard hook replaces an otherwise-successful result
+- **THEN** the result handed back to the model contains the replacement content rather than the original content
 
 ### Requirement: Unknown tool and argument validation short-circuit
 
@@ -165,6 +178,20 @@ flow back without the loop mediating.
 - **WHEN** the executor invokes the permission stage
 - **THEN** the stage receives the same `emit` stream the frontend drains, able to raise a permission request and block on its reply path
 
+### Requirement: Hook-edited arguments are revalidated
+When a before-tool hard hook returns edited arguments, the executor SHALL
+revalidate those arguments against the tool's declared shape before consulting
+permission or running the tool.
+
+#### Scenario: Invalid hook edit blocks the call
+- **WHEN** a before-tool hook returns edited arguments that do not fit the tool's declared shape
+- **THEN** the call is blocked with a validation error result
+- **THEN** permission, sandbox, and the tool do not run
+
+#### Scenario: Valid hook edit proceeds
+- **WHEN** a before-tool hook returns edited arguments that fit the tool's declared shape
+- **THEN** the edited arguments are the arguments passed to later stages
+
 ### Requirement: Action classification handed to the permission stage
 
 The executor SHALL classify each resolved call's action kind — read-only,
@@ -182,4 +209,3 @@ the permission stage can err safe.
 
 - **WHEN** a dispatched call's action kind cannot be determined
 - **THEN** the permission stage receives an unknown classification rather than a guessed one
-

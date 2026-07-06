@@ -12,6 +12,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Conversation represents a sequence of turns between user and assistant.
@@ -130,6 +131,11 @@ type RunEvent struct {
 
 	// Warning is an advisory message (for OverBudgetWarningEvent events).
 	Warning string
+
+	// HookOutcome describes an observable hook action: a block, replacement, or
+	// injection. It lets frontends render hook activity without reading internal
+	// hook engine state.
+	HookOutcome *HookOutcome
 }
 
 // RunEventType identifies the kind of run event.
@@ -166,6 +172,9 @@ const (
 	// OverBudgetWarningEvent is an advisory that the conversation exceeds the
 	// context budget (carries Warning); the run proceeds anyway.
 	OverBudgetWarningEvent
+
+	// HookOutcomeEvent reports a hook block, replacement, or injected context.
+	HookOutcomeEvent
 )
 
 // Status values for StatusChange events. They are advisory and carry no control
@@ -264,6 +273,111 @@ type RunFinished struct {
 
 	// Err names the cause when Reason is StopFailed; nil otherwise.
 	Err error
+}
+
+// HookMoment is the lifecycle point at which a hook runs. The v1 set is small
+// and deliberately additive: later phases may introduce new moments without
+// changing the existing names.
+type HookMoment string
+
+const (
+	HookSessionStart HookMoment = "session-start"
+	HookPromptSubmit HookMoment = "prompt-submit"
+	HookBeforeTool   HookMoment = "before-tool"
+	HookAfterTool    HookMoment = "after-tool"
+	HookRunFinished  HookMoment = "run-finished"
+	HookSessionStop  HookMoment = "session-stop"
+)
+
+// HookAction is the observable action a hook took.
+type HookAction string
+
+const (
+	HookAllowed  HookAction = "allowed"
+	HookBlocked  HookAction = "blocked"
+	HookReplaced HookAction = "replaced"
+	HookInjected HookAction = "injected"
+)
+
+// HookScope narrows when a hook fires. Empty scope means broad: every event at
+// the configured moment matches. When ToolName and Pattern are both set, both
+// must match.
+type HookScope struct {
+	ToolName string
+	Pattern  string
+}
+
+// HookEvent is the data a hook inspects. Only fields relevant to the moment are
+// populated.
+type HookEvent struct {
+	Moment       HookMoment
+	Prompt       string
+	ToolCall     *ToolCall
+	ToolResult   *ToolResult
+	RunFinished  *RunFinished
+	Conversation Conversation
+	Detail       string
+}
+
+// HookVerdict is the hook's response. Block stops the gated action. Arguments
+// replace a before-tool call's arguments. Result replaces an after-tool result's
+// text. InjectedContext adds standing context before a provider call.
+type HookVerdict struct {
+	Block           bool
+	Reason          string
+	Arguments       map[string]interface{}
+	Result          *string
+	InjectedContext []string
+}
+
+// HookFunc is an in-process hook registered through the SDK.
+type HookFunc func(context.Context, HookEvent) HookVerdict
+
+// HookRegistration describes an in-process hook.
+type HookRegistration struct {
+	Name    string
+	Moment  HookMoment
+	Scope   HookScope
+	Timeout time.Duration
+	Handler HookFunc
+}
+
+// ExternalHook describes an operator-configured external command hook.
+//
+// The hook runner sends HookEvent as JSON on stdin. Exit status is the default
+// verdict: zero allows, non-zero blocks. Stdout may contain a JSON HookVerdict
+// shape to override that default:
+// {"block":true,"reason":"why","arguments":{...},"result":"...","injected_context":["..."]}.
+type ExternalHook struct {
+	Name    string
+	Moment  HookMoment
+	Scope   HookScope
+	Command []string
+	Timeout time.Duration
+}
+
+// HookOutcome is the event-stream payload for hook actions.
+type HookOutcome struct {
+	HookName string
+	Moment   HookMoment
+	Action   HookAction
+	Reason   string
+}
+
+// HookLifecycleResult is the composed result of lifecycle hooks.
+type HookLifecycleResult struct {
+	Block           bool
+	Reason          string
+	InjectedContext []string
+}
+
+// LifecycleHooks is implemented by the hooks engine for loop/session-owned
+// moments. Tool-owned moments use PreToolCheck and PostToolCheck.
+type LifecycleHooks interface {
+	SessionStart(ctx context.Context, conv Conversation, emit func(RunEvent) error) HookLifecycleResult
+	PromptSubmit(ctx context.Context, prompt string, conv Conversation, emit func(RunEvent) error) HookLifecycleResult
+	RunFinished(ctx context.Context, fin RunFinished, conv Conversation, emit func(RunEvent) error) HookLifecycleResult
+	SessionStop(ctx context.Context, conv Conversation, emit func(RunEvent) error) HookLifecycleResult
 }
 
 // Dispatcher is the single seam through which every tool call flows. Phase 1

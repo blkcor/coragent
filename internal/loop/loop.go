@@ -39,6 +39,10 @@ type Deps struct {
 
 	// StreamOptions are the per-request model options.
 	StreamOptions core.StreamOptions
+
+	// TransientContext is harness-provided system context visible only to this
+	// run's provider calls. It is not written to durable conversation history.
+	TransientContext []string
 }
 
 // Run drives the loop and returns the single terminal stop reason. emit is
@@ -56,7 +60,7 @@ func Run(ctx context.Context, d Deps, emit func(core.RunEvent) error) core.RunFi
 		}
 
 		// Gather: assemble the conversation and warn once if it is over budget.
-		snap := d.Context.Snapshot()
+		snap := withTransientContext(d.Context.Snapshot(), d.TransientContext)
 		if d.ContextBudgetTokens > 0 && !warnedOverBudget {
 			if est := d.Context.EstimateTokens(); est > d.ContextBudgetTokens {
 				warnedOverBudget = true
@@ -169,4 +173,23 @@ func dispatchAll(ctx context.Context, d Deps, calls []core.ToolCall, emit func(c
 
 func statusEvent(status string) core.RunEvent {
 	return core.RunEvent{Type: core.StatusChange, Status: status}
+}
+
+func withTransientContext(conv core.Conversation, injected []string) core.Conversation {
+	if len(injected) == 0 {
+		return conv
+	}
+	turns := make([]core.Turn, 0, len(conv.Turns)+len(injected))
+	if len(conv.Turns) > 0 {
+		turns = append(turns, conv.Turns[0])
+		for _, content := range injected {
+			turns = append(turns, core.Turn{Role: "system", Content: content})
+		}
+		turns = append(turns, conv.Turns[1:]...)
+	} else {
+		for _, content := range injected {
+			turns = append(turns, core.Turn{Role: "system", Content: content})
+		}
+	}
+	return core.Conversation{Turns: turns}
 }

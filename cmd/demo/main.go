@@ -243,6 +243,7 @@ func runInteractive() int {
 	sc := agent.SessionConfig{
 		Provider:               p,
 		SystemPrompt:           "You are a concise coding assistant.",
+		ExternalHooks:          settings.ExternalHooks(),
 		PersistRememberedRules: true,
 	}
 	if settings.Permission != nil {
@@ -250,7 +251,11 @@ func runInteractive() int {
 		sc.PermissionAllow = settings.Permission.Allow
 		sc.PermissionDeny = settings.Permission.Deny
 	}
-	session := agent.NewSession(sc)
+	session, err := agent.NewSessionWithError(sc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create session: %v\n", err)
+		return 1
+	}
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

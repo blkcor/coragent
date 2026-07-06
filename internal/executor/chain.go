@@ -76,9 +76,20 @@ func (e *Executor) Dispatch(ctx context.Context, call core.ToolCall, emit func(c
 	}
 
 	// Hard pre-checks: an unconditional block stops permission, sandbox, and the
-	// tool. The model cannot override it.
-	if d := e.stages.Pre.PreCheck(ctx, call); d.Block {
+	// tool. Non-blocking hooks may edit arguments; the executor revalidates the
+	// result before any downstream stage sees it.
+	if d := e.preCheck(ctx, call, emit); d.Block {
+		e.emitHookOutcome(emit, core.HookBeforeTool, d.Outcome)
 		return e.errorResult(call.ID, "blocked by hard pre-check: "+d.Reason), nil
+	} else if d.EditedArguments != nil {
+		e.emitHookOutcome(emit, core.HookBeforeTool, d.Outcome)
+		if err := validateArgs(handler.Descriptor().Parameters, d.EditedArguments); err != nil {
+			return e.errorResult(call.ID, "invalid hook-edited arguments: "+err.Error()), nil
+		}
+		args = d.EditedArguments
+		call.Arguments = args
+	} else {
+		e.emitHookOutcome(emit, core.HookBeforeTool, d.Outcome)
 	}
 
 	// Human permission: a denial stops the sandbox and the tool; edited arguments
@@ -120,8 +131,17 @@ func (e *Executor) Dispatch(ctx context.Context, call core.ToolCall, emit func(c
 	// Hard post-checks: a veto turns the successful result into an error carrying
 	// the block's reason.
 	result := core.ToolResult{ToolCallID: call.ID, Result: truncate(out, e.budget), IsError: false}
-	if d := e.stages.Post.PostCheck(ctx, call, result); d.Block {
+	if d := e.postCheck(ctx, call, result, emit); d.Block {
+		e.emitHookOutcome(emit, core.HookAfterTool, d.Outcome)
 		return e.errorResult(call.ID, "blocked by hard post-check: "+d.Reason), nil
+	} else if d.ReplacementResult != nil {
+		e.emitHookOutcome(emit, core.HookAfterTool, d.Outcome)
+		replaced := *d.ReplacementResult
+		replaced.ToolCallID = call.ID
+		replaced.Result = truncate(replaced.Result, e.budget)
+		return replaced, nil
+	} else {
+		e.emitHookOutcome(emit, core.HookAfterTool, d.Outcome)
 	}
 	return result, nil
 }
@@ -130,6 +150,39 @@ func (e *Executor) Dispatch(ctx context.Context, call core.ToolCall, emit func(c
 // by the same output budget.
 func (e *Executor) errorResult(callID, msg string) core.ToolResult {
 	return core.ToolResult{ToolCallID: callID, Result: truncate(msg, e.budget), IsError: true}
+}
+
+func (e *Executor) emitHookOutcome(emit func(core.RunEvent) error, moment core.HookMoment, outcome *core.HookOutcome) {
+	if emit == nil || outcome == nil {
+		return
+	}
+	ev := *outcome
+	if ev.Moment == "" {
+		ev.Moment = moment
+	}
+	_ = emit(core.RunEvent{Type: core.HookOutcomeEvent, HookOutcome: &ev})
+}
+
+type preToolCheckWithEmit interface {
+	PreCheckWithEmit(context.Context, core.ToolCall, func(core.RunEvent) error) core.StageDecision
+}
+
+type postToolCheckWithEmit interface {
+	PostCheckWithEmit(context.Context, core.ToolCall, core.ToolResult, func(core.RunEvent) error) core.StageDecision
+}
+
+func (e *Executor) preCheck(ctx context.Context, call core.ToolCall, emit func(core.RunEvent) error) core.StageDecision {
+	if p, ok := e.stages.Pre.(preToolCheckWithEmit); ok {
+		return p.PreCheckWithEmit(ctx, call, emit)
+	}
+	return e.stages.Pre.PreCheck(ctx, call)
+}
+
+func (e *Executor) postCheck(ctx context.Context, call core.ToolCall, result core.ToolResult, emit func(core.RunEvent) error) core.StageDecision {
+	if p, ok := e.stages.Post.(postToolCheckWithEmit); ok {
+		return p.PostCheckWithEmit(ctx, call, result, emit)
+	}
+	return e.stages.Post.PostCheck(ctx, call, result)
 }
 
 // classify resolves a handler's action kind for the permission stage: an explicit

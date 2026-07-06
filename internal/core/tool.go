@@ -61,6 +61,16 @@ type StageDecision struct {
 
 	// Reason explains a block; empty when Block is false.
 	Reason string
+
+	// EditedArguments, when non-nil, replace a before-tool call's arguments.
+	EditedArguments map[string]interface{}
+
+	// ReplacementResult, when non-nil, replaces the after-tool result.
+	ReplacementResult *ToolResult
+
+	// Outcome is emitted on the run stream when the hard gate took an observable
+	// hook action.
+	Outcome *HookOutcome
 }
 
 // PermissionResult is the verdict of the human-permission stage. It may allow,

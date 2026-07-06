@@ -31,6 +31,7 @@ type (
 	RunEventType   = core.RunEventType
 	ReplyEnded     = core.ReplyEnded
 	ReplyEndReason = core.ReplyEndReason
+	HookOutcome    = core.HookOutcome
 )
 
 // Run lifecycle.
@@ -47,6 +48,20 @@ type (
 
 // Tool-dispatch seam.
 type Dispatcher = core.Dispatcher
+
+// Hooks.
+type (
+	HookMoment          = core.HookMoment
+	HookAction          = core.HookAction
+	HookScope           = core.HookScope
+	HookEvent           = core.HookEvent
+	HookVerdict         = core.HookVerdict
+	HookFunc            = core.HookFunc
+	HookRegistration    = core.HookRegistration
+	ExternalHook        = core.ExternalHook
+	HookLifecycleResult = core.HookLifecycleResult
+	LifecycleHooks      = core.LifecycleHooks
+)
 
 // Tool authoring. An SDK developer implements ToolHandler to add a custom
 // capability; it travels the identical execution path as the built-ins.
@@ -83,6 +98,25 @@ const (
 	RunFinishedEvent         = core.RunFinishedEvent
 	PermissionRequestedEvent = core.PermissionRequestedEvent
 	OverBudgetWarningEvent   = core.OverBudgetWarningEvent
+	HookOutcomeEvent         = core.HookOutcomeEvent
+)
+
+// HookMoment values.
+const (
+	HookSessionStart = core.HookSessionStart
+	HookPromptSubmit = core.HookPromptSubmit
+	HookBeforeTool   = core.HookBeforeTool
+	HookAfterTool    = core.HookAfterTool
+	HookRunFinished  = core.HookRunFinished
+	HookSessionStop  = core.HookSessionStop
+)
+
+// HookAction values.
+const (
+	HookAllowed  = core.HookAllowed
+	HookBlocked  = core.HookBlocked
+	HookReplaced = core.HookReplaced
+	HookInjected = core.HookInjected
 )
 
 // Status values for StatusChange events.

@@ -44,6 +44,15 @@ func (m *Manager) AppendUser(content string) {
 	m.conv.Turns = append(m.conv.Turns, core.Turn{Role: "user", Content: content})
 }
 
+// AppendSystem appends harness-provided standing context. It uses the system
+// role so injected policy is visible to the model without pretending the user
+// typed it.
+func (m *Manager) AppendSystem(content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.conv.Turns = append(m.conv.Turns, core.Turn{Role: "system", Content: content})
+}
+
 // AppendAssistant appends an assistant turn carrying any requested tool calls.
 func (m *Manager) AppendAssistant(content string, calls []core.ToolCall) {
 	m.mu.Lock()
