@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 
 	"github.com/blkcor/coragent/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/blkcor/coragent/internal/hooks"
 	"github.com/blkcor/coragent/internal/loop"
 	"github.com/blkcor/coragent/internal/permission"
+	sandboxpkg "github.com/blkcor/coragent/internal/sandbox"
 	"github.com/blkcor/coragent/internal/tools"
 )
 
@@ -79,6 +81,26 @@ type SessionConfig struct {
 	// project settings file so it survives a restart. Ignored when a custom
 	// Dispatcher is supplied.
 	PersistRememberedRules bool
+
+	// WorkingDirectory is the project root used to derive the sandbox policy.
+	// Empty uses the current process working directory. Ignored when a custom
+	// Dispatcher is supplied.
+	WorkingDirectory string
+
+	// SandboxScratchRoot is the writable scratch root for sandboxed commands.
+	// Empty uses the OS temporary directory. Ignored when a custom Dispatcher is
+	// supplied.
+	SandboxScratchRoot string
+
+	// SandboxExtraReadRoots and SandboxExtraWriteRoots are additive policy grants
+	// for sandboxed commands. Ignored when a custom Dispatcher is supplied.
+	SandboxExtraReadRoots  []string
+	SandboxExtraWriteRoots []string
+
+	// SandboxNetwork grants outbound network access to sandboxed commands. The
+	// default is false, so network is denied. Ignored when a custom Dispatcher is
+	// supplied.
+	SandboxNetwork bool
 }
 
 // Session is one agent interaction lifecycle. It owns the conversation and runs
@@ -94,6 +116,7 @@ type Session struct {
 	budget     int
 	opts       StreamOptions
 	hooks      LifecycleHooks
+	sandbox    SandboxStatus
 	startupErr error
 
 	inFlight atomic.Bool
@@ -140,7 +163,15 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 		}
 	}
 
-	d, eng, advertised := resolveDispatcher(cfg, hookEngine)
+	d, eng, advertised, sandboxStatus, dispatchErr := resolveDispatcher(cfg, hookEngine)
+	if dispatchErr != nil {
+		if strict {
+			return nil, dispatchErr
+		}
+		if startupErr == nil {
+			startupErr = dispatchErr
+		}
+	}
 
 	return &Session{
 		provider:   cfg.Provider,
@@ -152,6 +183,7 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 		budget:     cfg.ContextBudgetTokens,
 		opts:       cfg.StreamOptions,
 		hooks:      hookEngine,
+		sandbox:    sandboxStatus,
 		startupErr: startupErr,
 	}, nil
 }
@@ -161,9 +193,9 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 // with the caller's Tools and no engine. Otherwise the default executor is built
 // over the built-ins plus any custom handlers, with hooks and permission wired
 // into the same ordered chain.
-func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine) (Dispatcher, *permission.Engine, []Tool) {
+func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine) (Dispatcher, *permission.Engine, []Tool, SandboxStatus, error) {
 	if cfg.Dispatcher != nil {
-		return cfg.Dispatcher, nil, cfg.Tools
+		return cfg.Dispatcher, nil, cfg.Tools, SandboxStatus{}, nil
 	}
 
 	catalog := tools.NewDefaultCatalog()
@@ -182,7 +214,12 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine) (Dispatcher,
 		stages.Post = hookEngine
 	}
 	stages.Permission = eng
-	return executor.New(catalog, stages, 0), eng, advertised
+	sbox, err := buildSandbox(cfg)
+	if err != nil {
+		return nil, nil, nil, SandboxStatus{}, err
+	}
+	stages.Sandbox = sbox
+	return executor.New(catalog, stages, 0), eng, advertised, sbox.Status(), nil
 }
 
 // buildEngine constructs the permission engine from the config: starting mode,
@@ -202,6 +239,31 @@ func buildEngine(cfg SessionConfig) *permission.Engine {
 	return permission.New(pcfg)
 }
 
+func buildSandbox(cfg SessionConfig) (*sandboxpkg.Sandbox, error) {
+	wd := cfg.WorkingDirectory
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("agent: derive sandbox policy: %w", err)
+		}
+	}
+	inputs := sandboxpkg.PolicyInputs{
+		WorkingDirectory: wd,
+		ScratchRoot:      cfg.SandboxScratchRoot,
+		Settings: sandboxpkg.Grants{
+			ExtraReadRoots:  cfg.SandboxExtraReadRoots,
+			ExtraWriteRoots: cfg.SandboxExtraWriteRoots,
+			Network:         cfg.SandboxNetwork,
+		},
+	}
+	sbox, err := sandboxpkg.NewFromInputs(inputs)
+	if err != nil {
+		return nil, fmt.Errorf("agent: derive sandbox policy: %w", err)
+	}
+	return sbox, nil
+}
+
 // SetPermissionMode changes the permission posture for subsequent turns. It is
 // intended to be called between turns. It errors on an unknown mode or when the
 // session was built with a custom Dispatcher (which owns its own permission).
@@ -215,6 +277,13 @@ func (s *Session) SetPermissionMode(mode string) error {
 	}
 	s.permission.SetMode(m)
 	return nil
+}
+
+// SandboxStatus reports the active command confinement level for sessions using
+// the default executor. A session with a custom Dispatcher returns the zero value
+// because the caller owns command execution.
+func (s *Session) SandboxStatus() SandboxStatus {
+	return s.sandbox
 }
 
 // Run starts a run from the user's input and returns one live, read-only event

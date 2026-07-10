@@ -238,6 +238,9 @@ type PermissionDecision struct {
 
 	// EditedArguments are modified arguments for the tool call, if any.
 	EditedArguments map[string]interface{}
+
+	// SandboxGrants are additive sandbox policy grants for this approved call.
+	SandboxGrants SandboxGrants
 }
 
 // StopReason is the single terminal outcome of a run. Every run ends with

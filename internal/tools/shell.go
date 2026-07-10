@@ -44,6 +44,10 @@ func (ShellCommand) RunsCommands() bool { return true }
 func (ShellCommand) ActionKind() core.ActionKind { return core.ActionCommand }
 
 func (ShellCommand) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+	return (ShellCommand{}).ExecuteCommand(ctx, args, directCommandRunner{})
+}
+
+func (ShellCommand) ExecuteCommand(ctx context.Context, args map[string]interface{}, runner core.CommandRunner) (string, error) {
 	command, ok := stringArg(args, "command")
 	if !ok || command == "" {
 		return "", fmt.Errorf("run_command: command is required")
@@ -53,11 +57,21 @@ func (ShellCommand) Execute(ctx context.Context, args map[string]interface{}) (s
 	if ms, ok := intArg(args, "timeout_ms"); ok && ms > 0 {
 		timeout = time.Duration(ms) * time.Millisecond
 	}
+	return runner.Run(ctx, core.CommandSpec{Command: command, Timeout: timeout})
+}
+
+type directCommandRunner struct{}
+
+func (directCommandRunner) Run(ctx context.Context, spec core.CommandSpec) (string, error) {
+	timeout := spec.Timeout
+	if timeout <= 0 {
+		timeout = defaultShellTimeout
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "sh", "-c", command)
+	cmd := exec.CommandContext(cctx, "sh", "-c", spec.Command)
 	// Put the child in its own process group so we can kill the whole group on
 	// timeout or cancellation — no orphaned grandchildren left behind.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -102,6 +116,8 @@ func (ShellCommand) Execute(ctx context.Context, args map[string]interface{}) (s
 	}
 	return text, nil
 }
+
+var _ core.CommandToolHandler = ShellCommand{}
 
 // compose joins captured output with a trailing status note, keeping the note
 // present even when the command produced no output.

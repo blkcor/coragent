@@ -349,7 +349,7 @@ func (e *Engine) ask(ctx context.Context, call core.ToolCall, kind core.ActionKi
 		if !d.Allow {
 			return core.PermissionResult{Allow: false, Reason: "denied by user"}
 		}
-		return core.PermissionResult{Allow: true, EditedArguments: d.EditedArguments}
+		return core.PermissionResult{Allow: true, EditedArguments: d.EditedArguments, SandboxGrants: d.SandboxGrants}
 	case <-ctx.Done():
 		return core.PermissionResult{Allow: false, Reason: "permission timed out: " + ctx.Err().Error()}
 	}

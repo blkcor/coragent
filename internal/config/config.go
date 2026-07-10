@@ -24,6 +24,10 @@ type Settings struct {
 	// Permission configures the soft human-in-the-loop gate: starting mode and the
 	// allow/deny rule lists.
 	Permission *PermissionSettings `json:"permission,omitempty"`
+
+	// Sandbox configures additive sandbox policy grants. Missing sandbox settings
+	// keep the safe baseline: project/scratch writes and network denied.
+	Sandbox *SandboxSettings `json:"sandbox,omitempty"`
 }
 
 // PermissionSettings configures the permission engine. Each allow/deny entry is a
@@ -38,6 +42,21 @@ type PermissionSettings struct {
 
 	// Deny lists rules that refuse an action without asking. Deny beats allow.
 	Deny []string `json:"deny,omitempty"`
+}
+
+// SandboxSettings configures additive grants for the command sandbox. It does
+// not accept backend-specific profile text; profiles are generated internally
+// from these structured fields.
+type SandboxSettings struct {
+	// ExtraReadRoots adds paths readable by sandboxed commands.
+	ExtraReadRoots []string `json:"extra_read_roots,omitempty"`
+
+	// ExtraWriteRoots adds paths writable by sandboxed commands.
+	ExtraWriteRoots []string `json:"extra_write_roots,omitempty"`
+
+	// Network grants outbound network access when true. Nil means unspecified,
+	// preserving the inherited or default value during merge.
+	Network *bool `json:"network,omitempty"`
 }
 
 // ModelSettings configures the model backend.
@@ -214,6 +233,9 @@ func loadFromFile(path string) (Settings, error) {
 	if err := validateHooks(settings.Hooks, path); err != nil {
 		return Settings{}, err
 	}
+	if err := validateSandbox(settings.Sandbox, path); err != nil {
+		return Settings{}, err
+	}
 
 	return settings, nil
 }
@@ -286,6 +308,21 @@ func merge(dst, src Settings) Settings {
 		dst.Permission.Allow = append(dst.Permission.Allow, src.Permission.Allow...)
 		dst.Permission.Deny = append(dst.Permission.Deny, src.Permission.Deny...)
 	}
+	if src.Sandbox != nil {
+		if dst.Sandbox == nil {
+			dst.Sandbox = &SandboxSettings{}
+		}
+		if src.Sandbox.ExtraReadRoots != nil {
+			dst.Sandbox.ExtraReadRoots = append([]string(nil), src.Sandbox.ExtraReadRoots...)
+		}
+		if src.Sandbox.ExtraWriteRoots != nil {
+			dst.Sandbox.ExtraWriteRoots = append([]string(nil), src.Sandbox.ExtraWriteRoots...)
+		}
+		if src.Sandbox.Network != nil {
+			v := *src.Sandbox.Network
+			dst.Sandbox.Network = &v
+		}
+	}
 	return dst
 }
 
@@ -331,6 +368,35 @@ func validateHooks(hooks []HookSettings, filePath string) error {
 		}
 		if h.TimeoutMillis != nil && *h.TimeoutMillis < 0 {
 			return fmt.Errorf("invalid hook %q in %s: timeout_ms must be non-negative", name, filePath)
+		}
+	}
+	return nil
+}
+
+func validateSandbox(s *SandboxSettings, filePath string) error {
+	if s == nil {
+		return nil
+	}
+	for _, p := range s.ExtraReadRoots {
+		if p == "" {
+			return fmt.Errorf("invalid sandbox in %s: extra_read_roots contains an empty path", filePath)
+		}
+		if filepath.IsAbs(p) {
+			continue
+		}
+		if filepath.Clean(p) != p {
+			return fmt.Errorf("invalid sandbox in %s: invalid extra_read_roots path %q", filePath, p)
+		}
+	}
+	for _, p := range s.ExtraWriteRoots {
+		if p == "" {
+			return fmt.Errorf("invalid sandbox in %s: extra_write_roots contains an empty path", filePath)
+		}
+		if filepath.IsAbs(p) {
+			continue
+		}
+		if filepath.Clean(p) != p {
+			return fmt.Errorf("invalid sandbox in %s: invalid extra_write_roots path %q", filePath, p)
 		}
 	}
 	return nil

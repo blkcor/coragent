@@ -423,6 +423,31 @@ func TestCancellationReturnsErrorResult(t *testing.T) {
 	}
 }
 
+func TestSandboxBlockReturnsRecoverableToolError(t *testing.T) {
+	var visits []string
+	st := recordingStages(&visits, recordCfg{})
+	st.Sandbox = blockingSandbox{visits: &visits, out: "sandbox blocked command: outside write"}
+	tool := &fakeTool{name: "shell", runsCmds: true, visits: &visits}
+	cat := tools.NewCatalog()
+	cat.MustRegister(tool)
+	ex := New(cat, st, 0)
+
+	res, err := ex.Dispatch(context.Background(), core.ToolCall{ID: "c1", ToolName: "shell"}, noEmit)
+	if err != nil {
+		t.Fatalf("dispatch must not return harness error: %v", err)
+	}
+	if !res.IsError || !strings.Contains(res.Result, "sandbox blocked command") {
+		t.Fatalf("sandbox denial should be a readable error result, got %+v", res)
+	}
+	if res.ToolCallID != "c1" {
+		t.Fatalf("error result should be tied to the originating call, got %q", res.ToolCallID)
+	}
+	if tool.executed {
+		t.Fatalf("blocked sandbox must prevent tool execution")
+	}
+	assertOrder(t, visits, []string{"pre", "permission", "sandbox"})
+}
+
 // --- helpers ----------------------------------------------------------------
 
 // --- custom-tool parity -----------------------------------------------------
@@ -564,6 +589,16 @@ type recSandbox struct{ visits *[]string }
 func (r recSandbox) Run(ctx context.Context, h core.ToolHandler, args map[string]interface{}) (string, error) {
 	*r.visits = append(*r.visits, "sandbox")
 	return h.Execute(ctx, args)
+}
+
+type blockingSandbox struct {
+	visits *[]string
+	out    string
+}
+
+func (b blockingSandbox) Run(context.Context, core.ToolHandler, map[string]interface{}) (string, error) {
+	*b.visits = append(*b.visits, "sandbox")
+	return b.out, context.Canceled
 }
 
 type recPost struct {

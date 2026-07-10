@@ -251,6 +251,7 @@ func runInteractive() int {
 		sc.PermissionAllow = settings.Permission.Allow
 		sc.PermissionDeny = settings.Permission.Deny
 	}
+	applySandboxSettings(&sc, settings)
 	session, err := agent.NewSessionWithError(sc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create session: %v\n", err)
@@ -285,6 +286,17 @@ func runInteractive() int {
 		}
 		fmt.Print("agent> ")
 		readout(events, promptForPermission(scanner))
+	}
+}
+
+func applySandboxSettings(sc *agent.SessionConfig, settings config.Settings) {
+	if settings.Sandbox == nil {
+		return
+	}
+	sc.SandboxExtraReadRoots = append([]string(nil), settings.Sandbox.ExtraReadRoots...)
+	sc.SandboxExtraWriteRoots = append([]string(nil), settings.Sandbox.ExtraWriteRoots...)
+	if settings.Sandbox.Network != nil {
+		sc.SandboxNetwork = *settings.Sandbox.Network
 	}
 }
 

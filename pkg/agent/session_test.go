@@ -461,6 +461,21 @@ func TestSetPermissionModeRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestSandboxStatusVisibleOnDefaultSession(t *testing.T) {
+	p := testutil.NewFakeProvider([]testutil.ScriptedReply{{TextDeltas: []string{"hi"}, EndReason: agent.Finished}})
+	s := agent.NewSession(agent.SessionConfig{Provider: p, SystemPrompt: "sys", WorkingDirectory: t.TempDir()})
+	status := s.SandboxStatus()
+	switch status.Level {
+	case agent.ConfinementOSEnforced:
+	case agent.ConfinementPolicyFallback:
+		if status.Reason == "" {
+			t.Fatalf("fallback status should include reason: %+v", status)
+		}
+	default:
+		t.Fatalf("default session should report active sandbox status, got %+v", status)
+	}
+}
+
 func mustRun(t *testing.T, s *agent.Session, input string) <-chan agent.RunEvent {
 	t.Helper()
 	ch, err := s.Run(context.Background(), input)

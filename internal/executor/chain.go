@@ -113,7 +113,11 @@ func (e *Executor) Dispatch(ctx context.Context, call core.ToolCall, emit func(c
 		err error
 	)
 	if handler.RunsCommands() {
-		out, err = e.stages.Sandbox.Run(ctx, handler, args)
+		if s, ok := e.stages.Sandbox.(sandboxWithGrants); ok {
+			out, err = s.RunWithGrants(ctx, handler, args, perm.SandboxGrants)
+		} else {
+			out, err = e.stages.Sandbox.Run(ctx, handler, args)
+		}
 	} else {
 		out, err = handler.Execute(ctx, args)
 	}
@@ -200,3 +204,7 @@ func classify(handler core.ToolHandler) core.ActionKind {
 
 // Executor satisfies the public Dispatcher seam.
 var _ core.Dispatcher = (*Executor)(nil)
+
+type sandboxWithGrants interface {
+	RunWithGrants(context.Context, core.ToolHandler, map[string]interface{}, core.SandboxGrants) (string, error)
+}
