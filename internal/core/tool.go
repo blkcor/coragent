@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ToolHandler is an executable capability. It bundles the model-facing descriptor
 // the catalog advertises, the execution behavior the chain invokes, and a marker
@@ -22,6 +25,29 @@ type ToolHandler interface {
 	// RunsCommands reports whether this tool executes shell commands and so must
 	// pass through the sandbox stage. Pure file operations return false.
 	RunsCommands() bool
+}
+
+// CommandSpec describes one shell process a command-running tool wants to
+// launch. The sandbox owns process creation; the handler retains argument
+// validation and result post-processing around the runner call.
+type CommandSpec struct {
+	Command string
+	Timeout time.Duration
+}
+
+// CommandRunner is the only process-launch path available to a sandbox-aware
+// command tool. Its implementation applies the active confinement policy.
+type CommandRunner interface {
+	Run(ctx context.Context, spec CommandSpec) (string, error)
+}
+
+// CommandToolHandler is the companion contract for handlers whose RunsCommands
+// method returns true. ExecuteCommand keeps handler semantics intact while
+// requiring the actual process to be launched by the supplied runner.
+// Command-running handlers that do not implement this interface fail closed.
+type CommandToolHandler interface {
+	ToolHandler
+	ExecuteCommand(ctx context.Context, args map[string]interface{}, runner CommandRunner) (string, error)
 }
 
 // ActionKind classifies what a tool call does to the machine's state, so the
@@ -85,6 +111,16 @@ type PermissionResult struct {
 	// EditedArguments, when non-nil, replace the call's arguments. The executor
 	// re-validates them against the tool's declared shape before running.
 	EditedArguments map[string]interface{}
+
+	// SandboxGrants are additive grants for this approved call's sandbox policy.
+	SandboxGrants SandboxGrants
+}
+
+// SandboxGrants are per-call additive policy grants for command sandboxing.
+type SandboxGrants struct {
+	ExtraReadRoots  []string
+	ExtraWriteRoots []string
+	Network         bool
 }
 
 // PreToolCheck is the hard pre-execution gate (Phase 4 arms it). Phase 2 ships an

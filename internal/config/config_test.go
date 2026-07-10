@@ -448,3 +448,84 @@ func TestAppendPermissionRule_DenyAndCreateWhenMissing(t *testing.T) {
 		t.Errorf("deny rule must be persisted in a freshly created file, got %+v", reloaded.Permission)
 	}
 }
+
+// --- sandbox settings ------------------------------------------------------
+
+func TestLoadFromFile_SandboxSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	content := `{
+		"sandbox": {
+			"extra_read_roots": ["../shared"],
+			"extra_write_roots": ["/tmp/coragent-extra"],
+			"network": true
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	settings, err := loadFromFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if settings.Sandbox == nil {
+		t.Fatal("expected sandbox settings")
+	}
+	if strings.Join(settings.Sandbox.ExtraReadRoots, "|") != "../shared" {
+		t.Fatalf("read roots = %v", settings.Sandbox.ExtraReadRoots)
+	}
+	if strings.Join(settings.Sandbox.ExtraWriteRoots, "|") != "/tmp/coragent-extra" {
+		t.Fatalf("write roots = %v", settings.Sandbox.ExtraWriteRoots)
+	}
+	if settings.Sandbox.Network == nil || !*settings.Sandbox.Network {
+		t.Fatalf("network grant should parse as true")
+	}
+}
+
+func TestMerge_SandboxProjectOverridesOverlappingFields(t *testing.T) {
+	homeNetwork := false
+	projectNetwork := true
+	home := Settings{Sandbox: &SandboxSettings{
+		ExtraReadRoots:  []string{"/home/read"},
+		ExtraWriteRoots: []string{"/home/write"},
+		Network:         &homeNetwork,
+	}}
+	project := Settings{Sandbox: &SandboxSettings{
+		ExtraReadRoots: []string{"/project/read"},
+		Network:        &projectNetwork,
+	}}
+
+	merged := merge(home, project)
+	if strings.Join(merged.Sandbox.ExtraReadRoots, "|") != "/project/read" {
+		t.Fatalf("project read roots should override, got %v", merged.Sandbox.ExtraReadRoots)
+	}
+	if strings.Join(merged.Sandbox.ExtraWriteRoots, "|") != "/home/write" {
+		t.Fatalf("non-overlapping home write roots should be preserved, got %v", merged.Sandbox.ExtraWriteRoots)
+	}
+	if merged.Sandbox.Network == nil || !*merged.Sandbox.Network {
+		t.Fatalf("project network setting should override home")
+	}
+}
+
+func TestLoadFromFile_InvalidSandboxSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "read path", content: `{"sandbox":{"extra_read_roots":[""]}}`, want: "extra_read_roots"},
+		{name: "write path", content: `{"sandbox":{"extra_write_roots":[""]}}`, want: "extra_write_roots"},
+		{name: "network type", content: `{"sandbox":{"network":"yes"}}`, want: "sandbox.network"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(path, []byte(tc.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadFromFile(path)
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error naming %q and path, got %v", tc.want, err)
+			}
+		})
+	}
+}

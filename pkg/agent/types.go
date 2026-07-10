@@ -1,6 +1,9 @@
 package agent
 
-import "github.com/blkcor/coragent/internal/core"
+import (
+	"github.com/blkcor/coragent/internal/core"
+	"github.com/blkcor/coragent/internal/sandbox"
+)
 
 // This file re-exports the domain vocabulary from internal/core as type aliases.
 // The definitions live in internal/core so the harness machinery (loop, context,
@@ -63,9 +66,14 @@ type (
 	LifecycleHooks      = core.LifecycleHooks
 )
 
-// Tool authoring. An SDK developer implements ToolHandler to add a custom
-// capability; it travels the identical execution path as the built-ins.
-type ToolHandler = core.ToolHandler
+// Tool authoring. Command-running tools also implement CommandToolHandler and
+// launch processes only through the supplied CommandRunner.
+type (
+	ToolHandler        = core.ToolHandler
+	CommandToolHandler = core.CommandToolHandler
+	CommandRunner      = core.CommandRunner
+	CommandSpec        = core.CommandSpec
+)
 
 // Action classification. A ToolHandler may optionally implement ActionClassifier
 // to declare its ActionKind, which the soft permission gate uses for mode-aware
@@ -73,6 +81,13 @@ type ToolHandler = core.ToolHandler
 type (
 	ActionKind       = core.ActionKind
 	ActionClassifier = core.ActionClassifier
+)
+
+// Sandbox reporting.
+type (
+	SandboxStatus    = sandbox.Status
+	ConfinementLevel = sandbox.ConfinementLevel
+	SandboxGrants    = core.SandboxGrants
 )
 
 // Execution-chain stage seams. Phase 2 ships inert placeholders for these; later
@@ -147,4 +162,10 @@ const (
 	ActionRead    = core.ActionRead
 	ActionEdit    = core.ActionEdit
 	ActionCommand = core.ActionCommand
+)
+
+// ConfinementLevel values.
+const (
+	ConfinementOSEnforced     = sandbox.ConfinementOSEnforced
+	ConfinementPolicyFallback = sandbox.ConfinementPolicyFallback
 )
