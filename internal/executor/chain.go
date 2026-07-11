@@ -118,6 +118,8 @@ func (e *Executor) Dispatch(ctx context.Context, call core.ToolCall, emit func(c
 		} else {
 			out, err = e.stages.Sandbox.Run(ctx, handler, args)
 		}
+	} else if h, ok := handler.(eventAwareHandler); ok {
+		out, err = h.ExecuteWithEvents(ctx, args, emit)
 	} else {
 		out, err = handler.Execute(ctx, args)
 	}
@@ -173,6 +175,18 @@ type preToolCheckWithEmit interface {
 
 type postToolCheckWithEmit interface {
 	PostCheckWithEmit(context.Context, core.ToolCall, core.ToolResult, func(core.RunEvent) error) core.StageDecision
+}
+
+// eventAwareHandler is the internal optional shape used by handlers that need
+// the dispatcher's live event stream while they execute. The assertion happens
+// only at the existing non-command execution slot, after every upstream gate;
+// command-running handlers continue to execute through the sandbox contract.
+//
+// The interface itself stays private so core.ToolHandler and the public SDK
+// contract remain unchanged. A handler in another internal package opts in by
+// implementing the exported ExecuteWithEvents method.
+type eventAwareHandler interface {
+	ExecuteWithEvents(context.Context, map[string]interface{}, func(core.RunEvent) error) (string, error)
 }
 
 func (e *Executor) preCheck(ctx context.Context, call core.ToolCall, emit func(core.RunEvent) error) core.StageDecision {

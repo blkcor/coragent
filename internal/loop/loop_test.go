@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	convo "github.com/blkcor/coragent/internal/context"
@@ -81,6 +82,53 @@ func (blockingProvider) StreamReply(ctx context.Context, _ core.Conversation, _ 
 		}
 		<-ctx.Done()
 		ch <- core.RunEvent{Type: core.ErrorEvent, Error: ctx.Err()}
+	}()
+	return ch
+}
+
+// silentCloseProvider violates the provider protocol by closing its stream
+// without an ErrorEvent or the required ReplyEndedEvent.
+type silentCloseProvider struct{}
+
+func (silentCloseProvider) StreamReply(context.Context, core.Conversation, []core.Tool, core.StreamOptions) <-chan core.RunEvent {
+	ch := make(chan core.RunEvent)
+	close(ch)
+	return ch
+}
+
+// emptyReplyProvider completes the protocol explicitly while returning no text
+// or tool calls. This is a valid empty assistant answer.
+type emptyReplyProvider struct{}
+
+func (emptyReplyProvider) StreamReply(context.Context, core.Conversation, []core.Tool, core.StreamOptions) <-chan core.RunEvent {
+	ch := make(chan core.RunEvent, 1)
+	ch <- core.RunEvent{Type: core.ReplyEndedEvent, ReplyEnded: &core.ReplyEnded{Reason: core.Finished}}
+	close(ch)
+	return ch
+}
+
+// eventSequenceProvider emits its scripted events through an unbuffered channel.
+// Tests can use drained to prove the loop received every event through channel
+// close even when it rejected events after ReplyEndedEvent.
+type eventSequenceProvider struct {
+	events  []core.RunEvent
+	drained chan struct{}
+}
+
+func (p eventSequenceProvider) StreamReply(ctx context.Context, _ core.Conversation, _ []core.Tool, _ core.StreamOptions) <-chan core.RunEvent {
+	ch := make(chan core.RunEvent)
+	go func() {
+		defer close(ch)
+		if p.drained != nil {
+			defer close(p.drained)
+		}
+		for _, ev := range p.events {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 	return ch
 }
@@ -210,6 +258,178 @@ func TestProviderErrorEndsFailedNoPartialTurn(t *testing.T) {
 	snap := m.Snapshot()
 	if len(snap.Turns) != 2 {
 		t.Errorf("partial reply must not be recorded as a turn, got %d turns", len(snap.Turns))
+	}
+}
+
+func TestProviderSilentCloseEndsFailedWithoutAssistantTurn(t *testing.T) {
+	m := convo.New("sys")
+	m.AppendUser("hi")
+	c := &collector{}
+
+	fin := Run(context.Background(), deps(silentCloseProvider{}, m, executor.StandIn{}, 8), c.emit)
+	if fin.Reason != core.StopFailed || fin.Err == nil || !strings.Contains(fin.Err.Error(), "ReplyEndedEvent") {
+		t.Fatalf("silent close outcome = %v err=%v, want protocol failure", fin.Reason, fin.Err)
+	}
+	snap := m.Snapshot()
+	if len(snap.Turns) != 2 {
+		t.Fatalf("silent close must not record an assistant turn: %+v", snap.Turns)
+	}
+}
+
+func TestExplicitEmptyReplyEndedCompletesWithEmptyAssistantTurn(t *testing.T) {
+	m := convo.New("sys")
+	m.AppendUser("hi")
+	c := &collector{}
+
+	fin := Run(context.Background(), deps(emptyReplyProvider{}, m, executor.StandIn{}, 8), c.emit)
+	if fin.Reason != core.StopCompleted || fin.Err != nil {
+		t.Fatalf("explicit empty reply outcome = %v err=%v, want completed", fin.Reason, fin.Err)
+	}
+	snap := m.Snapshot()
+	if len(snap.Turns) != 3 || snap.Turns[2].Role != "assistant" || snap.Turns[2].Content != "" {
+		t.Fatalf("explicit empty reply must record an empty assistant turn: %+v", snap.Turns)
+	}
+}
+
+func TestEventsAfterReplyEndedFailWithoutRecordingOrDispatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		trailing core.RunEvent
+	}{
+		{
+			name: "tool call",
+			trailing: core.RunEvent{
+				Type:     core.ToolCallEvent,
+				ToolCall: &core.ToolCall{ID: "late", ToolName: "write_file"},
+			},
+		},
+		{
+			name:     "text delta",
+			trailing: core.RunEvent{Type: core.TextDelta, TextDelta: "late text"},
+		},
+		{
+			name: "second reply end",
+			trailing: core.RunEvent{
+				Type:       core.ReplyEndedEvent,
+				ReplyEnded: &core.ReplyEnded{Reason: core.Finished},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := convo.New("sys")
+			m.AppendUser("hi")
+			c := &collector{}
+			dispatched := false
+			d := funcDispatcher(func(context.Context, core.ToolCall, func(core.RunEvent) error) (core.ToolResult, error) {
+				dispatched = true
+				return core.ToolResult{}, nil
+			})
+			drained := make(chan struct{})
+			p := eventSequenceProvider{
+				drained: drained,
+				events: []core.RunEvent{
+					{Type: core.TextDelta, TextDelta: "valid prefix"},
+					{Type: core.ReplyEndedEvent, ReplyEnded: &core.ReplyEnded{Reason: core.Finished}},
+					tt.trailing,
+					{Type: core.StatusChange, Status: "also late"},
+				},
+			}
+
+			fin := Run(context.Background(), deps(p, m, d, 8), c.emit)
+			if fin.Reason != core.StopFailed || !errors.Is(fin.Err, errProviderStreamAfterReplyEnd) {
+				t.Fatalf("post-terminal outcome = %v err=%v, want protocol failure", fin.Reason, fin.Err)
+			}
+			if dispatched {
+				t.Fatal("a tool call after ReplyEndedEvent must not be dispatched")
+			}
+			select {
+			case <-drained:
+			default:
+				t.Fatal("provider channel was not drained through close")
+			}
+			snap := m.Snapshot()
+			if len(snap.Turns) != 2 {
+				t.Fatalf("protocol failure must not record an assistant turn: %+v", snap.Turns)
+			}
+			var deltas []string
+			for _, ev := range c.events {
+				if ev.Type == core.TextDelta {
+					deltas = append(deltas, ev.TextDelta)
+				}
+			}
+			if len(deltas) != 1 || deltas[0] != "valid prefix" {
+				t.Fatalf("events after ReplyEndedEvent leaked outward: %q", deltas)
+			}
+		})
+	}
+}
+
+func TestProviderErrorAfterReplyEndedKeepsProviderErrorPrecedence(t *testing.T) {
+	boom := errors.New("backend failed after reply end")
+	m := convo.New("sys")
+	m.AppendUser("hi")
+	c := &collector{}
+	p := eventSequenceProvider{events: []core.RunEvent{
+		{Type: core.ReplyEndedEvent, ReplyEnded: &core.ReplyEnded{Reason: core.Finished}},
+		{Type: core.ErrorEvent, Error: boom},
+	}}
+
+	fin := Run(context.Background(), deps(p, m, executor.StandIn{}, 8), c.emit)
+	if fin.Reason != core.StopFailed || !errors.Is(fin.Err, boom) {
+		t.Fatalf("provider error after reply end = %v err=%v, want provider error precedence", fin.Reason, fin.Err)
+	}
+	if len(m.Snapshot().Turns) != 2 {
+		t.Fatal("provider error after reply end must not record an assistant turn")
+	}
+}
+
+func TestMalformedReplyEndedFailsWithoutRecordingOrDispatch(t *testing.T) {
+	tests := []struct {
+		name  string
+		ended *core.ReplyEnded
+	}{
+		{name: "nil payload"},
+		{name: "unknown reason", ended: &core.ReplyEnded{Reason: core.ReplyEndReason(99)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := convo.New("sys")
+			m.AppendUser("hi")
+			c := &collector{}
+			dispatched := false
+			d := funcDispatcher(func(context.Context, core.ToolCall, func(core.RunEvent) error) (core.ToolResult, error) {
+				dispatched = true
+				return core.ToolResult{}, nil
+			})
+			drained := make(chan struct{})
+			p := eventSequenceProvider{
+				drained: drained,
+				events: []core.RunEvent{
+					{Type: core.ToolCallEvent, ToolCall: &core.ToolCall{ID: "c1", ToolName: "write_file"}},
+					{Type: core.ReplyEndedEvent, ReplyEnded: tt.ended},
+					{Type: core.StatusChange, Status: "late"},
+				},
+			}
+
+			fin := Run(context.Background(), deps(p, m, d, 8), c.emit)
+			if fin.Reason != core.StopFailed || !errors.Is(fin.Err, errProviderStreamInvalidEnd) {
+				t.Fatalf("malformed reply end = %v err=%v, want protocol failure", fin.Reason, fin.Err)
+			}
+			if dispatched {
+				t.Fatal("tool calls from a reply with a malformed end must not be dispatched")
+			}
+			select {
+			case <-drained:
+			default:
+				t.Fatal("provider channel was not drained through close")
+			}
+			if len(m.Snapshot().Turns) != 2 {
+				t.Fatal("a malformed reply end must not record an assistant turn")
+			}
+		})
 	}
 }
 

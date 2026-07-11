@@ -24,18 +24,27 @@ changing its signature.
 ### Requirement: Sandbox routing for command execution only
 
 The sandbox stage SHALL apply to the shell tool and to any custom tool that
-declares it runs commands. The sandbox stage SHALL be skipped for read, write,
+declares it runs commands. For those command-running tools, the sandbox stage
+SHALL enforce the active sandbox policy before the tool's command execution is
+allowed to affect the host. The sandbox stage SHALL be skipped for read, write,
 edit, content-search, and file-find calls.
 
 #### Scenario: Shell routes through the sandbox stage
 
 - **WHEN** a shell call (or a command-declaring custom tool) is dispatched
 - **THEN** the sandbox stage is entered before the tool executes
+- **THEN** the active sandbox policy is applied to the command execution
 
 #### Scenario: File operations skip the sandbox stage
 
 - **WHEN** a read, write, edit, content-search, or file-find call is dispatched
 - **THEN** the sandbox stage is skipped and the order is hard pre-checks → permission → execute → post-checks
+
+#### Scenario: Sandbox block prevents command execution
+
+- **WHEN** the sandbox stage blocks a shell call
+- **THEN** the command does not run outside the sandbox policy
+- **THEN** the executor returns an error result tied to the originating tool call
 
 ### Requirement: Inert placeholder stages
 
@@ -209,3 +218,101 @@ the permission stage can err safe.
 
 - **WHEN** a dispatched call's action kind cannot be determined
 - **THEN** the permission stage receives an unknown classification rather than a guessed one
+
+### Requirement: Command handlers use the sandbox runner
+
+A command-running tool SHALL preserve its handler-owned argument validation and
+result semantics while launching each child process only through the command
+runner supplied by the sandbox stage. A tool that declares command execution but
+does not implement the command-handler contract MUST fail closed before its
+ordinary `Execute` path can launch an unrestricted process.
+
+#### Scenario: Custom command handler keeps its semantics
+
+- **WHEN** a custom command handler validates or transforms non-standard arguments
+- **THEN** the sandbox invokes that handler rather than executing a raw argument directly
+- **THEN** each resulting child process is launched through the active sandbox runner
+- **THEN** the handler may post-process the runner output
+
+#### Scenario: Unadapted command handler fails closed
+
+- **WHEN** a tool declares that it runs commands but does not implement the command-handler contract
+- **THEN** the sandbox returns a readable error result
+- **THEN** the tool's ordinary execution method is not called
+
+### Requirement: Real sandbox stage preserves the ordered chain
+The executor SHALL fill the existing sandbox stage with the real sandbox
+implementation without changing the chain order, the dispatcher seam, or the
+surrounding permission and hook semantics.
+
+#### Scenario: Hook and permission order is unchanged
+- **WHEN** a command-running tool call is dispatched with real sandboxing enabled
+- **THEN** before-tool hard hooks run before permission
+- **THEN** permission runs before the sandbox
+- **THEN** the sandbox runs before command execution
+- **THEN** after-tool hard hooks run after a successful command result
+
+#### Scenario: Permission denial still stops sandbox
+- **WHEN** the permission stage denies a command-running tool call
+- **THEN** the sandbox stage does not run
+- **THEN** the command does not execute
+
+### Requirement: Sandbox failures are tool failures
+Sandbox-level failures SHALL surface as recoverable tool error results rather
+than harness crashes. The executor MUST attach the error result to the
+originating tool call and allow the loop to continue according to normal
+recoverable tool failure behavior.
+
+#### Scenario: Sandbox denial returns error result
+- **WHEN** the sandbox denies a command-running tool call
+- **THEN** the executor returns a `ToolResult` for that call
+- **THEN** the result has `IsError` true
+- **THEN** the run does not crash
+
+#### Scenario: Sandbox backend error returns error result
+- **WHEN** the active sandbox backend fails while preparing or running a command
+- **THEN** the executor returns a readable error result tied to the call
+- **THEN** the run does not crash
+
+### Requirement: Event-aware handlers remain inside the ordered chain
+The executor SHALL support an internal optional handler form that can receive the
+live event emitter only at the existing tool-execution slot. Resolution and
+argument validation, before-tool hooks, permission, sandbox routing when the
+handler runs commands, after-tool hooks, output truncation, and cancellation
+MUST retain their existing order and semantics. The optional form MUST NOT change
+the required public `ToolHandler` or `Dispatcher` contracts and MUST NOT create a
+second dispatch path.
+
+#### Scenario: Event-aware task observes the full executor order
+- **WHEN** the `task` handler is dispatched with instrumented validation, hooks, permission, and output truncation
+- **THEN** every existing stage runs in its defined order and only the final handler invocation receives the live emitter
+
+#### Scenario: Pre-hook block prevents child construction
+- **WHEN** a before-tool hook blocks an event-aware task call
+- **THEN** permission and the task handler do not run, no child starts, and the executor returns the normal blocked error result
+
+#### Scenario: Permission denial prevents child construction
+- **WHEN** permission denies an event-aware task call
+- **THEN** the task handler does not run, no child starts, and the executor returns the normal permission-denied result
+
+#### Scenario: Post-hook and truncation still govern task output
+- **WHEN** an event-aware task handler returns a child result
+- **THEN** after-tool hooks inspect or replace it and the central output budget bounds the final tool result exactly as for an ordinary handler
+
+#### Scenario: Existing handlers require no changes
+- **WHEN** a built-in or custom handler implements only the existing required `ToolHandler` methods
+- **THEN** it compiles and executes through the unchanged ordinary invocation path
+
+### Requirement: Event-aware handlers share the dispatch emitter
+The executor SHALL pass an event-aware handler the same live emitter received by
+`Dispatch`. The handler MUST NOT use a global event sink or a second outward
+channel, and an emitter failure MUST remain subject to the surrounding context's
+cancellation and backpressure behavior.
+
+#### Scenario: Task lifecycle uses the parent run stream
+- **WHEN** an event-aware task handler emits subagent lifecycle status or forwards a child permission request
+- **THEN** the event travels through the same emitter used by the parent dispatch and no side channel is created
+
+#### Scenario: Abandoned parent stream does not strand the handler
+- **WHEN** the shared emitter fails because the parent stream is no longer accepting events
+- **THEN** the task handler cancels its derived child work and returns without leaving a blocked descendant
