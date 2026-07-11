@@ -75,7 +75,10 @@ type ToolResult struct {
 // Provider is the interface for model backends.
 type Provider interface {
 	// StreamReply takes a conversation and available tools, and returns a channel
-	// of RunEvents streamed incrementally as the model produces its reply.
+	// of RunEvents streamed incrementally as the model produces its reply. A
+	// successful stream ends with exactly one ReplyEndedEvent carrying a non-nil
+	// ReplyEnded with one of the defined reasons, and then closes; no event may
+	// follow ReplyEndedEvent.
 	StreamReply(ctx context.Context, conv Conversation, tools []Tool, opts StreamOptions) <-chan RunEvent
 }
 
@@ -108,7 +111,9 @@ type RunEvent struct {
 
 	// ToolCall is the complete tool call. A provider populates it on a
 	// ToolCallEvent (provider stream); the loop consumes that and re-emits the
-	// request on the run stream as a ToolStartedEvent.
+	// request on the run stream as a ToolStartedEvent. Subagent lifecycle status
+	// events carry a minimal task call here so frontends can read its label without
+	// adding another public event payload shape.
 	ToolCall *ToolCall
 
 	// Status is the current status (for StatusChange events).
@@ -188,6 +193,14 @@ const (
 
 	// StatusIdle marks the run ending.
 	StatusIdle = "idle"
+
+	// StatusSubagentStarted marks a delegated child beginning work. The event's
+	// ToolCall carries the task label.
+	StatusSubagentStarted = "subagent_started"
+
+	// StatusSubagentFinished marks a delegated child finishing while the parent
+	// event stream remains writable. The event's ToolCall carries the task label.
+	StatusSubagentFinished = "subagent_finished"
 )
 
 // ReplyEnded describes how a reply ended.

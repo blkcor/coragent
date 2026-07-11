@@ -10,10 +10,17 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	convo "github.com/blkcor/coragent/internal/context"
 	"github.com/blkcor/coragent/internal/core"
+)
+
+var (
+	errProviderStreamIncomplete    = errors.New("provider stream closed without ReplyEndedEvent")
+	errProviderStreamAfterReplyEnd = errors.New("provider stream emitted an event after ReplyEndedEvent")
+	errProviderStreamInvalidEnd    = errors.New("provider stream emitted an invalid ReplyEndedEvent")
 )
 
 // Deps are the collaborators the loop drives. The caller owns the event stream
@@ -78,7 +85,7 @@ func Run(ctx context.Context, d Deps, emit func(core.RunEvent) error) core.RunFi
 		}
 
 		// Consult the model, streaming text out and accumulating tool calls.
-		text, calls, provErr, sendErr := consult(ctx, d, snap, emit)
+		text, calls, replyEnded, protocolErr, provErr, sendErr := consult(ctx, d, snap, emit)
 
 		// Cancellation wins over a provider error (the fake/real backend
 		// surfaces ctx.Err() as an error event on cancel).
@@ -88,6 +95,14 @@ func Run(ctx context.Context, d Deps, emit func(core.RunEvent) error) core.RunFi
 		if provErr != nil {
 			_ = emit(statusEvent(core.StatusIdle))
 			return core.RunFinished{Reason: core.StopFailed, Err: provErr}
+		}
+		if protocolErr != nil {
+			_ = emit(statusEvent(core.StatusIdle))
+			return core.RunFinished{Reason: core.StopFailed, Err: protocolErr}
+		}
+		if !replyEnded {
+			_ = emit(statusEvent(core.StatusIdle))
+			return core.RunFinished{Reason: core.StopFailed, Err: errProviderStreamIncomplete}
 		}
 
 		// Record the assistant turn (a partial reply on error is never recorded).
@@ -116,12 +131,25 @@ func Run(ctx context.Context, d Deps, emit func(core.RunEvent) error) core.RunFi
 
 // consult drains the provider stream for one round, emitting text incrementally
 // and accumulating tool calls. It returns the assembled text, the tool calls,
-// any provider error, and any emit (send) error.
-func consult(ctx context.Context, d Deps, snap core.Conversation, emit func(core.RunEvent) error) (text string, calls []core.ToolCall, provErr, sendErr error) {
+// whether the provider explicitly ended the reply, any stream-protocol error,
+// any provider error, and any emit (send) error. The channel is always drained;
+// events after ReplyEndedEvent are rejected rather than emitted or accumulated.
+func consult(ctx context.Context, d Deps, snap core.Conversation, emit func(core.RunEvent) error) (text string, calls []core.ToolCall, replyEnded bool, protocolErr, provErr, sendErr error) {
 	var buf []byte
 	for ev := range d.Provider.StreamReply(ctx, snap, d.Tools, d.StreamOptions) {
 		if sendErr != nil {
 			continue // drain remaining events so the provider goroutine completes
+		}
+		if replyEnded {
+			if protocolErr == nil {
+				protocolErr = errProviderStreamAfterReplyEnd
+			}
+			// A provider error still outranks a protocol failure, but no event
+			// after reply-end may be emitted, recorded, or dispatched.
+			if ev.Type == core.ErrorEvent && ev.Error != nil {
+				provErr = ev.Error
+			}
+			continue
 		}
 		switch ev.Type {
 		case core.TextDelta:
@@ -134,10 +162,26 @@ func consult(ctx context.Context, d Deps, snap core.Conversation, emit func(core
 		case core.ErrorEvent:
 			provErr = ev.Error
 		case core.ReplyEndedEvent:
+			replyEnded = true
+			if !validReplyEnded(ev.ReplyEnded) {
+				protocolErr = errProviderStreamInvalidEnd
+			}
 			// Reply-end reason is provider-level; the loop decides the run outcome.
 		}
 	}
-	return string(buf), calls, provErr, sendErr
+	return string(buf), calls, replyEnded, protocolErr, provErr, sendErr
+}
+
+func validReplyEnded(ended *core.ReplyEnded) bool {
+	if ended == nil {
+		return false
+	}
+	switch ended.Reason {
+	case core.Finished, core.StoppedToCallTools, core.CutOff:
+		return true
+	default:
+		return false
+	}
 }
 
 // dispatchAll runs the round's tool calls sequentially. It returns the collected

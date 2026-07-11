@@ -22,7 +22,9 @@ type (
 	ToolResult   = core.ToolResult
 )
 
-// Model backend seam.
+// Model backend seam. A successful Provider stream ends with exactly one
+// ReplyEndedEvent carrying a non-nil ReplyEnded with one of the defined reasons,
+// then closes. No event may follow ReplyEndedEvent.
 type (
 	Provider      = core.Provider
 	StreamOptions = core.StreamOptions
@@ -136,9 +138,11 @@ const (
 
 // Status values for StatusChange events.
 const (
-	StatusThinking    = core.StatusThinking
-	StatusCallingTool = core.StatusCallingTool
-	StatusIdle        = core.StatusIdle
+	StatusThinking         = core.StatusThinking
+	StatusCallingTool      = core.StatusCallingTool
+	StatusIdle             = core.StatusIdle
+	StatusSubagentStarted  = core.StatusSubagentStarted
+	StatusSubagentFinished = core.StatusSubagentFinished
 )
 
 // ReplyEndReason values.

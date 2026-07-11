@@ -8,12 +8,12 @@ import (
 	"sync/atomic"
 
 	"github.com/blkcor/coragent/internal/config"
-	convo "github.com/blkcor/coragent/internal/context"
 	"github.com/blkcor/coragent/internal/executor"
 	"github.com/blkcor/coragent/internal/hooks"
-	"github.com/blkcor/coragent/internal/loop"
 	"github.com/blkcor/coragent/internal/permission"
 	sandboxpkg "github.com/blkcor/coragent/internal/sandbox"
+	"github.com/blkcor/coragent/internal/sessionrun"
+	"github.com/blkcor/coragent/internal/subagent"
 	"github.com/blkcor/coragent/internal/tools"
 )
 
@@ -36,8 +36,9 @@ type SessionConfig struct {
 	// SystemPrompt seeds the conversation's system framing.
 	SystemPrompt string
 
-	// Tools are the capabilities offered to the model. When left empty and no
-	// custom Dispatcher is set, the built-in tools are advertised automatically.
+	// Tools are the capabilities offered to the model. When nil and no custom
+	// Dispatcher is set, the built-in tools are advertised automatically. A
+	// non-nil slice, including an empty one, is authoritative.
 	Tools []Tool
 
 	// ToolHandlers are custom executable tools registered alongside the built-ins
@@ -107,15 +108,8 @@ type SessionConfig struct {
 // the agent loop, exposing a single run entry point and a read-only snapshot of
 // history. One run is in flight at a time; a second concurrent start is refused.
 type Session struct {
-	provider   Provider
-	convo      *convo.Manager
-	dispatcher Dispatcher
+	runtime    *sessionrun.Runtime
 	permission *permission.Engine
-	tools      []Tool
-	maxRounds  int
-	budget     int
-	opts       StreamOptions
-	hooks      LifecycleHooks
 	sandbox    SandboxStatus
 	startupErr error
 
@@ -141,48 +135,45 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 		maxRounds = defaultMaxRounds
 	}
 
-	manager := convo.New(cfg.SystemPrompt)
 	hookEngine, hookErr := hooks.New(cfg.Hooks, cfg.ExternalHooks, hooks.Options{ExternalOutputLimit: cfg.HookOutputLimit})
-	var startupErr error
-	if hookErr != nil {
-		if strict {
-			return nil, hookErr
-		}
-		startupErr = hookErr
-	}
-	if hookErr == nil && !hookEngine.Empty() {
-		start := hookEngine.SessionStart(context.Background(), manager.Snapshot(), nil)
-		if start.Block {
-			startupErr = fmt.Errorf("session-start hook blocked startup: %s", start.Reason)
-			if strict {
-				return nil, startupErr
-			}
-		}
-		for _, injected := range start.InjectedContext {
-			manager.AppendSystem(injected)
-		}
+	if hookErr != nil && strict {
+		return nil, hookErr
 	}
 
-	d, eng, advertised, sandboxStatus, dispatchErr := resolveDispatcher(cfg, hookEngine)
-	if dispatchErr != nil {
-		if strict {
-			return nil, dispatchErr
-		}
-		if startupErr == nil {
-			startupErr = dispatchErr
-		}
+	runtime := sessionrun.New(sessionrun.Config{
+		Provider:            cfg.Provider,
+		SystemPrompt:        cfg.SystemPrompt,
+		MaxRounds:           maxRounds,
+		ContextBudgetTokens: cfg.ContextBudgetTokens,
+		StreamOptions:       cfg.StreamOptions,
+		Hooks:               hookEngine,
+	})
+
+	var startErr error
+	if hookErr == nil {
+		startErr = runtime.Start(context.Background(), nil)
+	}
+	if startErr != nil && strict {
+		return nil, startErr
+	}
+
+	d, eng, advertised, sandboxStatus, dispatchErr := resolveDispatcher(cfg, hookEngine, maxRounds)
+	runtime.BindExecution(d, advertised)
+	if dispatchErr != nil && strict {
+		return nil, dispatchErr
+	}
+
+	startupErr := hookErr
+	if startupErr == nil {
+		startupErr = startErr
+	}
+	if startupErr == nil {
+		startupErr = dispatchErr
 	}
 
 	return &Session{
-		provider:   cfg.Provider,
-		convo:      manager,
-		dispatcher: d,
+		runtime:    runtime,
 		permission: eng,
-		tools:      advertised,
-		maxRounds:  maxRounds,
-		budget:     cfg.ContextBudgetTokens,
-		opts:       cfg.StreamOptions,
-		hooks:      hookEngine,
 		sandbox:    sandboxStatus,
 		startupErr: startupErr,
 	}, nil
@@ -193,7 +184,7 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 // with the caller's Tools and no engine. Otherwise the default executor is built
 // over the built-ins plus any custom handlers, with hooks and permission wired
 // into the same ordered chain.
-func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine) (Dispatcher, *permission.Engine, []Tool, SandboxStatus, error) {
+func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds int) (Dispatcher, *permission.Engine, []Tool, SandboxStatus, error) {
 	if cfg.Dispatcher != nil {
 		return cfg.Dispatcher, nil, cfg.Tools, SandboxStatus{}, nil
 	}
@@ -202,11 +193,6 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine) (Dispatcher,
 	for _, h := range cfg.ToolHandlers {
 		catalog.MustRegister(h)
 	}
-	advertised := cfg.Tools
-	if advertised == nil {
-		advertised = catalog.Advertise()
-	}
-
 	eng := buildEngine(cfg)
 	stages := executor.InertStages()
 	if hookEngine != nil && !hookEngine.Empty() {
@@ -219,6 +205,28 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine) (Dispatcher,
 		return nil, nil, nil, SandboxStatus{}, err
 	}
 	stages.Sandbox = sbox
+
+	advertised := cfg.Tools
+	if _, callerOwnsTask := catalog.Lookup(subagent.ToolName); !callerOwnsTask {
+		ordinaryAdvertised := advertised
+		if ordinaryAdvertised == nil {
+			ordinaryAdvertised = catalog.Advertise()
+		}
+		blueprint := subagent.NewBlueprint(subagent.BlueprintConfig{
+			Provider:            cfg.Provider,
+			Catalog:             catalog,
+			Advertised:          ordinaryAdvertised,
+			Stages:              stages,
+			Hooks:               hookEngine,
+			MaxRounds:           maxRounds,
+			ContextBudgetTokens: cfg.ContextBudgetTokens,
+			StreamOptions:       cfg.StreamOptions,
+		})
+		catalog.MustRegister(subagent.NewTaskHandler(blueprint))
+	}
+	if advertised == nil {
+		advertised = catalog.Advertise()
+	}
 	return executor.New(catalog, stages, 0), eng, advertised, sbox.Status(), nil
 }
 
@@ -318,37 +326,7 @@ func (s *Session) Run(ctx context.Context, input string) (<-chan RunEvent, error
 			}
 		}
 
-		var transientContext []string
-		if s.hooks != nil {
-			prompt := s.hooks.PromptSubmit(ctx, input, s.convo.Snapshot(), emit)
-			if prompt.Block {
-				_ = emit(RunEvent{Type: ErrorEvent, Error: fmt.Errorf("prompt-submit hook blocked turn: %s", prompt.Reason)})
-				_ = emit(RunEvent{Type: StatusChange, Status: StatusIdle})
-				fin := RunFinished{Reason: StopFailed, Err: fmt.Errorf("%s", prompt.Reason)}
-				_ = s.hooks.RunFinished(ctx, fin, s.convo.Snapshot(), emit)
-				emitTerminal(ctx, ch, RunEvent{Type: RunFinishedEvent, RunFinished: &fin})
-				return
-			}
-			transientContext = append(transientContext, prompt.InjectedContext...)
-		}
-
-		s.convo.AppendUser(input)
-
-		fin := loop.Run(ctx, loop.Deps{
-			Provider:            s.provider,
-			Context:             s.convo,
-			Dispatcher:          s.dispatcher,
-			Tools:               s.tools,
-			MaxRounds:           s.maxRounds,
-			ContextBudgetTokens: s.budget,
-			StreamOptions:       s.opts,
-			TransientContext:    transientContext,
-		}, emit)
-
-		if s.hooks != nil {
-			_ = s.hooks.RunFinished(ctx, fin, s.convo.Snapshot(), emit)
-		}
-
+		fin := s.runtime.Run(ctx, input, emit)
 		emitTerminal(ctx, ch, RunEvent{Type: RunFinishedEvent, RunFinished: &fin})
 	}()
 
@@ -358,10 +336,10 @@ func (s *Session) Run(ctx context.Context, input string) (<-chan RunEvent, error
 // Conversation returns a deep-copied snapshot of the conversation. Callers can
 // inspect, log, or render it but cannot mutate the live conversation.
 func (s *Session) Conversation() Conversation {
-	if s.convo == nil {
+	if s.runtime == nil {
 		return Conversation{}
 	}
-	return s.convo.Snapshot()
+	return s.runtime.Conversation()
 }
 
 // Close stops the session and runs session-stop hooks. A blocking or failing
@@ -370,14 +348,10 @@ func (s *Session) Close(ctx context.Context) error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	if s.hooks == nil || s.convo == nil {
+	if s.runtime == nil {
 		return nil
 	}
-	stop := s.hooks.SessionStop(ctx, s.convo.Snapshot(), nil)
-	if stop.Block {
-		return fmt.Errorf("session-stop hook failed: %s", stop.Reason)
-	}
-	return nil
+	return s.runtime.Stop(ctx, nil)
 }
 
 // emitTerminal delivers the single terminal RunFinishedEvent. A live reader (even
