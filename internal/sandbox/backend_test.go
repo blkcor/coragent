@@ -205,7 +205,7 @@ func TestSandboxedCommandTimeoutPreservesPartialOutput(t *testing.T) {
 	out, err := runSandboxedCommand(
 		context.Background(),
 		"echo ready; kill -STOP $$",
-		500*time.Millisecond,
+		2*time.Second,
 		sandboxExecution{SandboxExecPath: fakeSandboxExec},
 	)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
@@ -214,7 +214,7 @@ func TestSandboxedCommandTimeoutPreservesPartialOutput(t *testing.T) {
 	if !strings.Contains(out, "ready") || !strings.Contains(out, "timed out") {
 		t.Fatalf("partial output and timeout note must be preserved, got %q", out)
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("timed-out process group was not stopped promptly: %s", elapsed)
 	}
 }

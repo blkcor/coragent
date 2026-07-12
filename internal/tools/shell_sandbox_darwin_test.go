@@ -113,7 +113,7 @@ func TestShellCommandDarwinSandboxDeniesNetworkByDefault(t *testing.T) {
 		t.Skip("nc unavailable")
 	}
 	ln := listenLocal(t)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	target := netcatTarget(t, ln)
 	p, err := sandbox.DerivePolicy(sandbox.PolicyInputs{WorkingDirectory: t.TempDir(), ScratchRoot: t.TempDir()})
 	if err != nil {
@@ -147,7 +147,7 @@ func TestShellCommandDarwinSandboxAllowsNetworkWithGrant(t *testing.T) {
 		t.Skip("nc unavailable")
 	}
 	ln := listenLocal(t)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	target := netcatTarget(t, ln)
 	go func() {
 		conn, err := ln.Accept()

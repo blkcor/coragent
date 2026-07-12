@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	convo "github.com/blkcor/coragent/internal/context"
 	"github.com/blkcor/coragent/internal/core"
@@ -84,6 +85,52 @@ func (blockingProvider) StreamReply(ctx context.Context, _ core.Conversation, _ 
 		ch <- core.RunEvent{Type: core.ErrorEvent, Error: ctx.Err()}
 	}()
 	return ch
+}
+
+type unbufferedCancellationProvider struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func newUnbufferedCancellationProvider() *unbufferedCancellationProvider {
+	return &unbufferedCancellationProvider{
+		started: make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+}
+
+func (p *unbufferedCancellationProvider) StreamReply(ctx context.Context, _ core.Conversation, _ []core.Tool, _ core.StreamOptions) <-chan core.RunEvent {
+	ch := make(chan core.RunEvent)
+	go func() {
+		defer close(ch)
+		defer close(p.stopped)
+		close(p.started)
+		<-ctx.Done()
+		// This send models the original compatible provider shape: report the
+		// cancellation on an unbuffered stream, then close.
+		ch <- core.RunEvent{Type: core.ErrorEvent, Error: ctx.Err()}
+	}()
+	return ch
+}
+
+// neverClosingProvider deliberately violates the Provider cancellation contract:
+// it ignores ctx and leaves its event channel open forever. started lets the test
+// cancel only after the loop is waiting on this exact provider stream.
+type neverClosingProvider struct {
+	started chan struct{}
+	events  chan core.RunEvent
+}
+
+func newNeverClosingProvider() *neverClosingProvider {
+	return &neverClosingProvider{
+		started: make(chan struct{}),
+		events:  make(chan core.RunEvent, 1),
+	}
+}
+
+func (p *neverClosingProvider) StreamReply(context.Context, core.Conversation, []core.Tool, core.StreamOptions) <-chan core.RunEvent {
+	close(p.started)
+	return p.events
 }
 
 // silentCloseProvider violates the provider protocol by closing its stream
@@ -460,6 +507,77 @@ func TestCancelMidThink(t *testing.T) {
 	}
 }
 
+func TestCancellationDrainsLegacyUnbufferedProviderCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := newUnbufferedCancellationProvider()
+	outcome := make(chan core.RunFinished, 1)
+	go func() {
+		outcome <- Run(ctx, deps(provider, convo.New("sys"), executor.StandIn{}, 8), (&collector{}).emit)
+	}()
+	<-provider.started
+	cancel()
+
+	select {
+	case fin := <-outcome:
+		if fin.Reason != core.StopCancelled {
+			t.Fatalf("outcome = %v, want cancelled", fin.Reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not return promptly after cancellation")
+	}
+	select {
+	case <-provider.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("legacy unbuffered provider remained blocked on its cleanup event")
+	}
+}
+
+func TestCancellationStopsReceivingFromProviderThatIgnoresContextAndNeverCloses(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := newNeverClosingProvider()
+	m := convo.New("sys")
+	m.AppendUser("hi")
+	c := &collector{}
+	outcomes := make(chan core.RunFinished, 1)
+
+	go func() {
+		outcomes <- Run(ctx, deps(p, m, executor.StandIn{}, 8), c.emit)
+		close(outcomes)
+	}()
+
+	// The provider signals only after StreamReply has returned its permanently
+	// open channel, so cancellation exercises the blocked receive without sleeps.
+	<-p.started
+	cancel()
+	<-ctx.Done()
+
+	// Queue an event strictly after cancellation. Even if the receive select sees
+	// both this event and ctx.Done as ready, the late event must not be accepted.
+	p.events <- core.RunEvent{Type: core.TextDelta, TextDelta: "late after cancellation"}
+
+	fin, ok := <-outcomes
+	if !ok {
+		t.Fatal("run returned no outcome")
+	}
+	if fin.Reason != core.StopCancelled || fin.Err != nil {
+		t.Fatalf("outcome = %v err=%v, want one clean cancellation", fin.Reason, fin.Err)
+	}
+	if _, ok := <-outcomes; ok {
+		t.Fatal("run returned more than one outcome")
+	}
+
+	for _, ev := range c.events {
+		if ev.Type == core.TextDelta && ev.TextDelta == "late after cancellation" {
+			t.Fatal("provider event queued after cancellation leaked into the run stream")
+		}
+	}
+	if turns := m.Snapshot().Turns; len(turns) != 2 {
+		t.Fatalf("cancelled provider reply must not append an assistant turn: %+v", turns)
+	}
+}
+
 func TestCancelMidTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := testutil.NewFakeProvider([]testutil.ScriptedReply{
@@ -515,7 +633,7 @@ func TestPermissionPauseOrdering(t *testing.T) {
 			iFinish = i
 		}
 	}
-	if !(iStart >= 0 && iPerm > iStart && iFinish > iPerm) {
+	if iStart < 0 || iPerm <= iStart || iFinish <= iPerm {
 		t.Errorf("want start < permission < finish, got %d %d %d", iStart, iPerm, iFinish)
 	}
 }

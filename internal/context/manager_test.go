@@ -1,7 +1,9 @@
 package context
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/blkcor/coragent/internal/core"
 )
@@ -81,5 +83,38 @@ func TestEstimateTokensGrows(t *testing.T) {
 	after := m.EstimateTokens()
 	if after <= before {
 		t.Errorf("estimate should grow with content: before=%d after=%d", before, after)
+	}
+}
+
+func TestEstimateRequestTokensIncludesEffectiveConversationAndTools(t *testing.T) {
+	base := core.Conversation{Turns: []core.Turn{{Role: "system", Content: "sys"}, {Role: "user", Content: "hello"}}}
+	withTransient := core.Conversation{Turns: append([]core.Turn(nil), base.Turns...)}
+	withTransient.Turns = append(withTransient.Turns[:1], append([]core.Turn{{Role: "system", Content: "injected context"}}, withTransient.Turns[1:]...)...)
+	tools := []core.Tool{{Name: "read_file", Description: "read", Parameters: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)}}
+
+	baseEstimate := EstimateRequestTokens(base, nil, core.StreamOptions{})
+	transientEstimate := EstimateRequestTokens(withTransient, nil, core.StreamOptions{})
+	toolEstimate := EstimateRequestTokens(withTransient, tools, core.StreamOptions{Model: "test"})
+	if transientEstimate <= baseEstimate {
+		t.Fatalf("transient context was not included: base=%d transient=%d", baseEstimate, transientEstimate)
+	}
+	if toolEstimate <= transientEstimate {
+		t.Fatalf("tool schemas/framing were not included: transient=%d tools=%d", transientEstimate, toolEstimate)
+	}
+	if repeated := EstimateRequestTokens(withTransient, tools, core.StreamOptions{Model: "test"}); repeated != toolEstimate {
+		t.Fatalf("estimate is not deterministic: first=%d repeated=%d", toolEstimate, repeated)
+	}
+}
+
+func TestUsageSnapshotKnownAndUnknownWindow(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	unknown := UsageSnapshot(1, core.ContextUsageEstimated, now, 12_000, 0)
+	if unknown.WindowTokens.Known || unknown.RemainingTokens.Known || unknown.OverBudget {
+		t.Fatalf("unknown window fabricated capacity: %+v", unknown)
+	}
+
+	known := UsageSnapshot(3, core.ContextUsageProvider, now, 12_000, 10_000)
+	if !known.WindowTokens.Known || known.WindowTokens.Value != 10_000 || !known.RemainingTokens.Known || known.RemainingTokens.Value != 0 || !known.OverBudget {
+		t.Fatalf("known over-budget snapshot is wrong: %+v", known)
 	}
 }

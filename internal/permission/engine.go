@@ -245,6 +245,15 @@ func (e *Engine) SetMode(m Mode) {
 	e.mu.Unlock()
 }
 
+// Mode returns the current permission posture. Callers use it only for
+// frontend-neutral, between-run inspection; Decide still snapshots the same
+// value under the engine mutex for each action.
+func (e *Engine) Mode() Mode {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.mode
+}
+
 // Decide resolves one call. The resolution order is fixed: bypass → plan-mode
 // block → deny rule → allow rule → auto-accept-edits → ask the human.
 func (e *Engine) Decide(ctx context.Context, call core.ToolCall, kind core.ActionKind, emit func(core.RunEvent) error) core.PermissionResult {
@@ -287,6 +296,122 @@ func (e *Engine) Decide(ctx context.Context, call core.ToolCall, kind core.Actio
 
 	// 6. Ask the human.
 	return e.ask(ctx, call, kind, emit)
+}
+
+// DecideRich applies the same soft policy as Decide and opens the full observed
+// request protocol only when a human decision is required.
+func (e *Engine) DecideRich(ctx context.Context, input core.RichPermissionInput, emit func(core.RichEvent) error) core.RichPermissionResult {
+	e.mu.Lock()
+	mode := e.mode
+	rules := e.rules
+	e.mu.Unlock()
+
+	allow := func() core.RichPermissionResult { return core.RichPermissionResult{Action: core.PermissionReplyAllow} }
+	deny := func(reason string) core.RichPermissionResult {
+		return core.RichPermissionResult{Action: core.PermissionReplyDeny, Reason: reason}
+	}
+	switch {
+	case mode == ModeBypass:
+		return allow()
+	case mode == ModePlan && input.Action != core.ActionRead:
+		return deny("plan mode: changes are disabled")
+	case mode == ModePlan && input.Action == core.ActionRead:
+		return allow()
+	case matchesAny(rules.Deny, input.Action, input.EffectiveCall):
+		return deny("denied by rule")
+	case matchesAllow(rules.Allow, input.Action, input.EffectiveCall):
+		return allow()
+	case mode == ModeAutoAcceptEdits && input.Action == core.ActionEdit:
+		return allow()
+	default:
+		return e.askRich(ctx, mode, input, emit)
+	}
+}
+
+func (e *Engine) askRich(ctx context.Context, mode Mode, input core.RichPermissionInput, emit func(core.RichEvent) error) core.RichPermissionResult {
+	if input.RequestID == "" {
+		input.RequestID = core.RequestID(core.NewOpaqueID("permission"))
+	}
+	scope := rememberedScope(input.Action, input.EffectiveCall)
+	capabilities := core.PermissionCapabilities{
+		Allow: true, Deny: true, Remember: scope != nil,
+		ReviseArguments: true, SchemaAwareEdit: true,
+		Preview:       input.Preview.Kind != core.ActionPreviewUnavailable,
+		SandboxGrants: input.GrantOptions.Support == core.CapabilitySupportSupported,
+	}
+	request, accepted := core.NewRichObservedPermissionRequest(core.RichPermissionRequestConfig{
+		RunContext: ctx, RequestID: input.RequestID, CallID: input.CallID, Revision: input.Revision,
+		EffectiveCall: input.EffectiveCall, Explanation: askReason(input.EffectiveCall, input.Action),
+		Action: input.Action, Preview: input.Preview, RememberedScope: scope,
+		GrantOptions: input.GrantOptions, Capabilities: capabilities, Mode: modeName(mode), Validate: input.ValidateReply,
+	})
+	legacyReply := make(chan core.PermissionDecision, 1)
+	legacyRequest := core.PermissionRequest{
+		ToolCall: input.EffectiveCall, Reason: askReason(input.EffectiveCall, input.Action),
+		RememberedRule: rememberedRuleString(input.Action, input.EffectiveCall), ReplyPath: legacyReply,
+	}
+	legacyEvent := core.RunEvent{Type: core.PermissionRequestedEvent, Permission: &legacyRequest}
+	if emit == nil {
+		return core.RichPermissionResult{Action: core.PermissionReplyDeny, Reason: "permission request has no event stream"}
+	}
+	if err := emit(core.RichEvent{
+		Origin: input.Origin, Kind: core.ObservedKindPermissionRequested,
+		Payload: &core.PermissionRequestedPayload{Request: request}, Legacy: &legacyEvent,
+	}); err != nil {
+		return core.RichPermissionResult{Action: core.PermissionReplyDeny, Reason: "permission timed out: " + err.Error()}
+	}
+	select {
+	case decision := <-accepted:
+		if decision.Remember && decision.Action != core.PermissionReplyReviseArguments {
+			e.remember(input.Action, input.EffectiveCall, core.PermissionDecision{
+				Allow: decision.Action == core.PermissionReplyAllow, Remember: true,
+			})
+		}
+		return core.RichPermissionResult{
+			Action: decision.Action, Remember: decision.Remember,
+			RevisedArguments: decision.RevisedArguments,
+			SandboxGrants:    decision.SandboxGrants.Clone(),
+		}
+	case decision := <-legacyReply:
+		effectiveCall := input.EffectiveCall
+		if decision.Allow && decision.EditedArguments != nil {
+			effectiveCall.Arguments = decision.EditedArguments
+		}
+		if decision.Remember {
+			e.remember(input.Action, effectiveCall, decision)
+		}
+		if !decision.Allow {
+			return core.RichPermissionResult{Action: core.PermissionReplyDeny, Reason: "denied by user"}
+		}
+		return core.RichPermissionResult{
+			Action: core.PermissionReplyAllow, Remember: decision.Remember,
+			RevisedArguments: decision.EditedArguments, SandboxGrants: decision.SandboxGrants.Clone(),
+			LegacyEditedApproval: decision.EditedArguments != nil,
+		}
+	case <-ctx.Done():
+		return core.RichPermissionResult{Action: core.PermissionReplyDeny, Reason: "permission timed out: " + ctx.Err().Error()}
+	}
+}
+
+func rememberedScope(kind core.ActionKind, call core.ToolCall) *core.RememberedRuleScope {
+	match := deriveMatch(kind, call)
+	if match == "" {
+		return nil
+	}
+	return &core.RememberedRuleScope{Kind: kind, Match: match}
+}
+
+func modeName(mode Mode) string {
+	switch mode {
+	case ModeAutoAcceptEdits:
+		return "auto-accept-edits"
+	case ModePlan:
+		return "plan"
+	case ModeBypass:
+		return "bypass"
+	default:
+		return "default"
+	}
 }
 
 func matchesAny(rules []Rule, kind core.ActionKind, call core.ToolCall) bool {
@@ -444,3 +569,4 @@ func rememberedRuleString(kind core.ActionKind, call core.ToolCall) string {
 
 // Engine satisfies the soft-permission seam.
 var _ core.Permission = (*Engine)(nil)
+var _ core.RichPermission = (*Engine)(nil)

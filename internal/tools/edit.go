@@ -39,6 +39,14 @@ func (EditFile) RunsCommands() bool { return false }
 
 func (EditFile) ActionKind() core.ActionKind { return core.ActionEdit }
 
+func (EditFile) Prepare(ctx context.Context, args map[string]interface{}) (core.PreparedAction, error) {
+	return prepareEditFile(ctx, args)
+}
+
+func (EditFile) ExecutePrepared(ctx context.Context, prepared core.PreparedAction) (string, error) {
+	return executePreparedFile(ctx, prepared, "edit_file")
+}
+
 func (EditFile) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	path, ok := stringArg(args, "path")
 	if !ok || path == "" {
@@ -90,3 +98,5 @@ func (EditFile) Execute(_ context.Context, args map[string]interface{}) (string,
 	}
 	return fmt.Sprintf("edited %s (%d replacement(s))", path, replaced), nil
 }
+
+var _ core.PreparedActionHandler = EditFile{}

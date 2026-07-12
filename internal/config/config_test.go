@@ -221,7 +221,7 @@ func TestLoad_NoFiles_ReturnsDefaults(t *testing.T) {
 	if err := os.Chdir(tmpProject); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
 	settings, err := Load()
 	if err != nil {

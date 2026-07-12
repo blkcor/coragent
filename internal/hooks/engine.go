@@ -476,7 +476,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	if b.limit <= 0 {
 		return len(p), nil
 	}
-	remaining := b.limit - b.Buffer.Len()
+	remaining := b.limit - b.Len()
 	if remaining <= 0 {
 		b.exceeded = true
 		return 0, errOutputLimit

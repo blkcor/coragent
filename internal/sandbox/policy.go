@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -191,7 +192,7 @@ func defaultReadRoots() []string {
 			"/opt/homebrew/Cellar",
 		)
 	}
-	if goroot := runtime.GOROOT(); filepath.IsAbs(goroot) {
+	if goroot := discoverGoRoot(); filepath.IsAbs(goroot) {
 		roots = append(roots, goroot)
 	}
 	for _, pathRoot := range filepath.SplitList(os.Getenv("PATH")) {
@@ -211,6 +212,25 @@ func defaultReadRoots() []string {
 		roots = append(roots, filepath.Join(home, "go", "pkg", "mod"))
 	}
 	return roots
+}
+
+func discoverGoRoot() string {
+	if configured := os.Getenv("GOROOT"); filepath.IsAbs(configured) {
+		return filepath.Clean(configured)
+	}
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(goPath)
+	if err != nil {
+		resolved = goPath
+	}
+	candidate := filepath.Dir(filepath.Dir(resolved))
+	if info, err := os.Stat(filepath.Join(candidate, "src")); err == nil && info.IsDir() {
+		return candidate
+	}
+	return ""
 }
 
 func underAnyRoot(path string, roots []string) bool {

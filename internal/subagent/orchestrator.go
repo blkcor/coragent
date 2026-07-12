@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/blkcor/coragent/internal/core"
 	"github.com/blkcor/coragent/internal/executor"
@@ -125,6 +126,18 @@ func (h *TaskHandler) Execute(ctx context.Context, args map[string]interface{}) 
 // ExecuteWithEvents runs one isolated child while using the parent dispatch's
 // live emitter for the two labeled statuses and child permission requests.
 func (h *TaskHandler) ExecuteWithEvents(ctx context.Context, args map[string]interface{}, emit func(core.RunEvent) error) (result string, err error) {
+	return h.ExecuteWithRichEvents(ctx, args, core.CallID(core.NewOpaqueID("call")), core.Origin{AgentID: core.AgentID(core.NewOpaqueID("agent"))}, func(event core.RichEvent) error {
+		if event.Legacy == nil || emit == nil {
+			return nil
+		}
+		return emit(*event.Legacy)
+	})
+}
+
+// ExecuteWithRichEvents constructs one isolated child and forwards only its
+// typed lifecycle plus live permission requests. Raw child text, reasoning,
+// tools, hooks, usage, warnings, omissions, errors, and terminal stay private.
+func (h *TaskHandler) ExecuteWithRichEvents(ctx context.Context, args map[string]interface{}, delegationCallID core.CallID, parentOrigin core.Origin, emit func(core.RichEvent) error) (result string, err error) {
 	request, err := parseRequest(args)
 	if err != nil {
 		return "", err
@@ -140,20 +153,22 @@ func (h *TaskHandler) ExecuteWithEvents(ctx context.Context, args map[string]int
 		ToolName:  ToolName,
 		Arguments: map[string]interface{}{"label": request.label},
 	}
-	if emit != nil {
-		if err := emit(core.RunEvent{Type: core.StatusChange, Status: core.StatusSubagentStarted, ToolCall: statusCall}); err != nil {
-			return "", err
-		}
+	childOrigin := core.Origin{
+		AgentID: core.AgentID(core.NewOpaqueID("agent")), ParentAgentID: parentOrigin.AgentID,
+		Depth: parentOrigin.Depth + 1, DelegationCallID: delegationCallID,
+	}
+	provenance := core.SubagentProvenance{
+		AgentID: childOrigin.AgentID, ParentAgentID: childOrigin.ParentAgentID,
+		Depth: childOrigin.Depth, DelegationCallID: delegationCallID, Label: request.label,
 	}
 
 	childCtx, childCancel := context.WithCancel(ctx)
 	defer childCancel()
 	var childEventErr error
-	childEmit := func(ev core.RunEvent) error {
-		forward := ev.Type == core.PermissionRequestedEvent ||
-			(ev.Type == core.StatusChange &&
-				(ev.Status == core.StatusSubagentStarted || ev.Status == core.StatusSubagentFinished))
-		if !forward {
+	childEmit := func(event core.RichEvent) error {
+		switch event.Kind {
+		case core.ObservedKindPermissionRequested, core.ObservedKindSubagentStarted, core.ObservedKindSubagentFinished:
+		default:
 			return nil
 		}
 		if emit == nil {
@@ -161,7 +176,7 @@ func (h *TaskHandler) ExecuteWithEvents(ctx context.Context, args map[string]int
 			childCancel()
 			return childEventErr
 		}
-		if err := emit(ev); err != nil {
+		if err := emit(event); err != nil {
 			childEventErr = err
 			childCancel()
 			return err
@@ -184,26 +199,58 @@ func (h *TaskHandler) ExecuteWithEvents(ctx context.Context, args map[string]int
 	})
 
 	started := false
+	outcome := core.SubagentOutcomeFailed
+	var observedErr *core.ObservedError
 	defer func() {
-		if !started || emit == nil || ctx.Err() != nil {
+		if !started || emit == nil {
 			return
 		}
-		if emitErr := emit(core.RunEvent{Type: core.StatusChange, Status: core.StatusSubagentFinished, ToolCall: statusCall}); emitErr != nil && err == nil {
+		if ctx.Err() != nil || childCtx.Err() != nil && outcome == core.SubagentOutcomeFailed {
+			outcome = core.SubagentOutcomeCancelled
+		}
+		if err != nil && observedErr == nil && outcome == core.SubagentOutcomeFailed {
+			safe := core.ObservedError{Code: "subagent_failed", Message: "the delegated task failed", Recoverable: true}
+			observedErr = &safe
+		}
+		legacy := core.RunEvent{Type: core.StatusChange, Status: core.StatusSubagentFinished, ToolCall: statusCall}
+		var legacyProjection *core.RunEvent
+		if ctx.Err() == nil {
+			legacyProjection = &legacy
+		}
+		if emitErr := emit(core.RichEvent{
+			Origin: childOrigin, Kind: core.ObservedKindSubagentFinished, Legacy: legacyProjection,
+			Payload: &core.SubagentFinishedPayload{Agent: provenance, Outcome: outcome, FinishedAt: time.Now(), Error: observedErr},
+		}); emitErr != nil && err == nil {
 			err = emitErr
 			result = ""
 		}
 	}()
 
-	started = true
-	if startErr := childRuntime.Start(childCtx, childEmit); startErr != nil {
-		stopErr := childRuntime.Stop(childCtx, childEmit)
+	dropLegacyChildEvent := func(core.RunEvent) error { return nil }
+	if startErr := childRuntime.Start(childCtx, dropLegacyChildEvent); startErr != nil {
+		stopErr := childRuntime.Stop(childCtx, dropLegacyChildEvent)
 		return "", combineErrors("child startup failed", startErr, stopErr)
 	}
+	startedAt := time.Now()
+	legacyStarted := core.RunEvent{Type: core.StatusChange, Status: core.StatusSubagentStarted, ToolCall: statusCall}
+	if emit != nil {
+		if emitErr := emit(core.RichEvent{
+			Origin: childOrigin, Kind: core.ObservedKindSubagentStarted, Legacy: &legacyStarted,
+			Payload: &core.SubagentStartedPayload{Agent: provenance, StartedAt: startedAt},
+		}); emitErr != nil {
+			_ = childRuntime.Stop(childCtx, dropLegacyChildEvent)
+			return "", emitErr
+		}
+	}
+	started = true
 
-	fin := childRuntime.Run(childCtx, request.instruction, childEmit)
-	stopErr := childRuntime.Stop(childCtx, childEmit)
+	fin := childRuntime.RunRich(childCtx, request.instruction, sessionrun.RichRunOptions{
+		RunID: core.RunID(core.NewOpaqueID("run")), Origin: childOrigin,
+	}, childEmit)
+	stopErr := childRuntime.Stop(childCtx, dropLegacyChildEvent)
 
 	if ctx.Err() != nil || childCtx.Err() != nil || fin.Reason == core.StopCancelled {
+		outcome = core.SubagentOutcomeCancelled
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
@@ -222,10 +269,13 @@ func (h *TaskHandler) ExecuteWithEvents(ctx context.Context, args map[string]int
 		if !ok {
 			return "", errors.New("task: child completed without a final assistant answer")
 		}
+		outcome = core.SubagentOutcomeCompleted
 		return answer, nil
 	case core.StopReachedStepLimit:
+		outcome = core.SubagentOutcomeReachedStepLimit
 		return "", combineErrors("task: child reached the step limit", nil, stopErr)
 	case core.StopFailed:
+		outcome = core.SubagentOutcomeFailed
 		cause := fin.Err
 		if cause == nil {
 			cause = errors.New("unknown child failure")

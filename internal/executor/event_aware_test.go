@@ -47,7 +47,7 @@ func TestEventAwareHandlerReceivesLiveEmitterAtExistingExecutionSlot(t *testing.
 	if result.IsError || result.Result != "child result" {
 		t.Fatalf("unexpected task result: %+v", result)
 	}
-	assertOrder(t, visits, []string{"pre", "permission", "execute_with_events", "emit", "post"})
+	assertOrder(t, visits, []string{"pre", "permission", "pre", "execute_with_events", "emit", "post"})
 	if base.executed {
 		t.Fatalf("ordinary Execute ran instead of ExecuteWithEvents")
 	}

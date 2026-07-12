@@ -35,6 +35,14 @@ func (WriteFile) RunsCommands() bool { return false }
 
 func (WriteFile) ActionKind() core.ActionKind { return core.ActionEdit }
 
+func (WriteFile) Prepare(ctx context.Context, args map[string]interface{}) (core.PreparedAction, error) {
+	return prepareWriteFile(ctx, args)
+}
+
+func (WriteFile) ExecutePrepared(ctx context.Context, prepared core.PreparedAction) (string, error) {
+	return executePreparedFile(ctx, prepared, "write_file")
+}
+
 func (WriteFile) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	path, ok := stringArg(args, "path")
 	if !ok || path == "" {
@@ -58,3 +66,5 @@ func (WriteFile) Execute(_ context.Context, args map[string]interface{}) (string
 	// Concise confirmation — never echo the content back.
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
+
+var _ core.PreparedActionHandler = WriteFile{}

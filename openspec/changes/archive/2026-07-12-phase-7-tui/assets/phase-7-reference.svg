@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Coragent Phase 7 TUI reference board</title>
+  <desc id="desc">Quiet Instrumentation visual direction with a canonical terminal screen, semantic colors, tool states, permission sheet, context usage, omissions, and responsive frames.</desc>
+  <defs>
+    <style>
+      .canvas { fill: #080A08; }
+      .screen { fill: #0C0D0C; stroke: #30352E; stroke-width: 2; }
+      .surface { fill: #131512; }
+      .elevated { fill: #1A1D19; stroke: #4A5147; stroke-width: 1.5; }
+      .hairline { stroke: #30352E; stroke-width: 1; }
+      .text { fill: #E7E9E3; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 14px; }
+      .strong { fill: #E7E9E3; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 14px; font-weight: 700; }
+      .meta { fill: #90988B; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 12px; }
+      .tiny { fill: #90988B; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 10px; }
+      .title { fill: #E7E9E3; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 28px; font-weight: 700; }
+      .subtitle { fill: #90988B; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 14px; }
+      .section { fill: #D6A95F; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+      .accent { fill: #D6A95F; }
+      .success { fill: #7EBC77; }
+      .danger { fill: #E17A72; }
+      .info { fill: #8FA9A1; }
+      .muted { fill: #90988B; }
+      .label { fill: #0C0D0C; font-family: "Recursive Mono", "SFMono-Regular", Menlo, monospace; font-size: 11px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect class="canvas" x="0" y="0" width="1800" height="1200"/>
+  <text class="title" x="40" y="54">CORAGENT / PHASE 7 TUI</text>
+  <text class="subtitle" x="40" y="82">Quiet Instrumentation · one execution rail · honest capability and omission states · cell-first geometry</text>
+
+  <text class="section" x="40" y="122">FOUNDATIONS</text>
+  <g transform="translate(40 138)">
+    <rect x="0" y="0" width="132" height="46" rx="3" fill="#0C0D0C" stroke="#30352E"/><text class="meta" x="10" y="19">CANVAS</text><text class="tiny" x="10" y="36">#0C0D0C</text>
+    <rect x="142" y="0" width="132" height="46" rx="3" fill="#131512" stroke="#30352E"/><text class="meta" x="152" y="19">SURFACE</text><text class="tiny" x="152" y="36">#131512</text>
+    <rect x="284" y="0" width="132" height="46" rx="3" fill="#1A1D19" stroke="#30352E"/><text class="meta" x="294" y="19">ELEVATED</text><text class="tiny" x="294" y="36">#1A1D19</text>
+    <rect x="426" y="0" width="132" height="46" rx="3" fill="#E7E9E3"/><text class="label" x="436" y="19">TEXT</text><text class="label" x="436" y="36">#E7E9E3</text>
+    <rect x="568" y="0" width="132" height="46" rx="3" fill="#D6A95F"/><text class="label" x="578" y="19">ACCENT</text><text class="label" x="578" y="36">#D6A95F</text>
+    <rect x="710" y="0" width="132" height="46" rx="3" fill="#7EBC77"/><text class="label" x="720" y="19">SUCCESS</text><text class="label" x="720" y="36">#7EBC77</text>
+    <rect x="852" y="0" width="132" height="46" rx="3" fill="#E17A72"/><text class="label" x="862" y="19">DANGER</text><text class="label" x="862" y="36">#E17A72</text>
+    <text class="meta" x="1012" y="19">CELL 8 × 18 px</text><text class="tiny" x="1012" y="37">runtime uses terminal cells</text>
+  </g>
+
+  <text class="section" x="40" y="220">CANONICAL 120 × 36</text>
+  <g transform="translate(40 238)">
+    <rect class="screen" x="0" y="0" width="960" height="648" rx="5"/>
+    <rect class="surface" x="1" y="1" width="958" height="35" rx="4"/>
+    <line class="hairline" x1="0" y1="36" x2="960" y2="36"/>
+    <text class="strong" x="16" y="23">coragent</text>
+    <text class="meta" x="101" y="23">coragent/phase-7</text>
+    <rect x="765" y="9" width="67" height="20" rx="2" fill="#D6A95F"/><text class="label" x="777" y="23">PLAN</text>
+    <text class="meta" x="844" y="23">sandbox: os</text>
+
+    <text class="meta" x="24" y="70">YOU  14:32</text>
+    <rect class="surface" x="16" y="82" width="912" height="48" rx="3"/>
+    <text class="text" x="28" y="105">Refactor the parser and verify the generated lookahead table.</text>
+
+    <text class="meta" x="24" y="163">AGENT</text>
+    <text class="text" x="24" y="189">I will inspect the parser contract and its focused tests first.</text>
+    <text class="accent" x="24" y="221" font-family="monospace" font-size="15">◇</text>
+    <text class="meta" x="48" y="221">Reasoning summary · 2 steps · 8.4s</text>
+    <text class="tiny" x="845" y="221">ENTER</text>
+
+    <text class="muted" x="24" y="263" font-family="monospace" font-size="15">○</text>
+    <text class="strong" x="48" y="263">read_file</text>
+    <text class="meta" x="160" y="263">internal/parser/parser.go</text>
+    <text class="meta" x="848" y="263">preparing</text>
+
+    <text class="success" x="24" y="295" font-family="monospace" font-size="15">●</text>
+    <text class="strong" x="48" y="295">read_file</text>
+    <text class="meta" x="160" y="295">internal/parser/parser_test.go</text>
+    <text class="meta" x="836" y="295">214 lines</text>
+
+    <text class="accent" x="24" y="327" font-family="monospace" font-size="15">◐</text>
+    <text class="strong" x="48" y="327">search_content</text>
+    <text class="meta" x="185" y="327">"buildTable" · internal/parser</text>
+    <text class="accent" x="853" y="327" font-family="monospace" font-size="12">running</text>
+
+    <text class="accent" x="24" y="375" font-family="monospace" font-size="15">◆</text>
+    <text class="strong" x="48" y="375">edit_file</text>
+    <text class="meta" x="160" y="375">internal/parser/parser.go</text>
+    <text class="accent" x="790" y="375" font-family="monospace" font-size="12">approval needed</text>
+    <rect x="45" y="391" width="883" height="85" rx="3" fill="#131512" stroke="#30352E"/>
+    <text class="meta" x="61" y="413">@@ parser.go:84-88 @@</text>
+    <rect x="53" y="422" width="867" height="20" fill="#351C1C"/><text class="danger" x="61" y="437" font-family="monospace" font-size="13">- table := buildTable(tokens)</text>
+    <rect x="53" y="446" width="867" height="20" fill="#16301F"/><text class="success" x="61" y="461" font-family="monospace" font-size="13">+ table := buildLookaheadTable(tokens)</text>
+
+    <rect class="elevated" x="130" y="495" width="700" height="103" rx="4"/>
+    <text class="strong" x="150" y="519">Permission required · edit_file · preview r1</text>
+    <text class="meta" x="150" y="544">Modify internal/parser/parser.go</text>
+    <text class="meta" x="150" y="566">Remember: edit:/workspace/internal/parser/parser.go</text>
+    <text class="accent" x="150" y="587" font-family="monospace" font-size="12">[a] allow  [A] remember  [d] deny  [e] edit args  [s] grants</text>
+
+    <line class="hairline" x1="0" y1="608" x2="960" y2="608"/>
+    <text class="accent" x="16" y="628" font-family="monospace" font-size="12">waiting for approval ◆</text>
+    <text class="meta" x="686" y="628">gpt-5.4 · ctx 31% provider</text>
+    <rect class="surface" x="1" y="636" width="958" height="11"/>
+  </g>
+
+  <text class="section" x="1040" y="220">COMPONENT STATES</text>
+  <g transform="translate(1040 238)">
+    <rect class="screen" x="0" y="0" width="720" height="278" rx="5"/>
+    <text class="meta" x="18" y="28">EXECUTION RAIL</text>
+    <text class="muted" x="20" y="61" font-family="monospace" font-size="16">○</text><text class="text" x="52" y="61">proposed / preparing</text>
+    <text class="accent" x="20" y="93" font-family="monospace" font-size="16">◆</text><text class="text" x="52" y="93">awaiting permission</text>
+    <text class="accent" x="20" y="125" font-family="monospace" font-size="16">◐</text><text class="text" x="52" y="125">executing</text>
+    <text class="success" x="20" y="157" font-family="monospace" font-size="16">●</text><text class="text" x="52" y="157">success</text>
+    <text class="danger" x="20" y="189" font-family="monospace" font-size="16">×</text><text class="text" x="52" y="189">error</text>
+    <text class="muted" x="20" y="221" font-family="monospace" font-size="16">∅</text><text class="text" x="52" y="221">cancelled</text>
+    <text class="danger" x="20" y="253" font-family="monospace" font-size="16">■</text><text class="text" x="52" y="253">hard hook blocked</text>
+
+    <line class="hairline" x1="350" y1="18" x2="350" y2="260"/>
+    <text class="meta" x="376" y="28">MODE AND CONTEXT</text>
+    <rect x="376" y="45" width="104" height="24" rx="2" fill="#D6A95F"/><text class="label" x="389" y="62">AUTO EDIT</text>
+    <rect x="488" y="45" width="80" height="24" rx="2" fill="#E17A72"/><text class="label" x="505" y="62">BYPASS</text>
+    <text class="text" x="376" y="105">ctx 38.4k / 128k</text><text class="accent" x="568" y="105" font-family="monospace" font-size="14">30% est</text>
+    <text class="text" x="376" y="137">ctx ~38.4k</text><text class="meta" x="508" y="137">window unknown</text>
+    <text class="accent" x="376" y="179" font-family="monospace" font-size="14">!</text><text class="text" x="400" y="179">80% context warning</text>
+    <text class="danger" x="376" y="211" font-family="monospace" font-size="14">!</text><text class="text" x="400" y="211">95% context critical</text>
+  </g>
+
+  <text class="section" x="1040" y="548">OMISSION AND CAPABILITY TRUTH</text>
+  <g transform="translate(1040 566)">
+    <rect class="screen" x="0" y="0" width="720" height="320" rx="5"/>
+    <text class="info" x="20" y="35" font-family="monospace" font-size="14">…</text><text class="text" x="48" y="35">41 lines folded locally · Enter to expand</text>
+    <text class="accent" x="20" y="75" font-family="monospace" font-size="14">!</text><text class="text" x="48" y="75">14.2 KiB omitted by harness · cannot expand</text>
+    <text class="danger" x="20" y="115" font-family="monospace" font-size="14">!</text><text class="text" x="48" y="115">response stopped at provider length limit</text>
+    <line class="hairline" x1="20" y1="140" x2="700" y2="140"/>
+    <text class="meta" x="20" y="171">CAPABILITY INSPECTOR</text>
+    <text class="strong" x="20" y="203">tools</text><text class="text" x="150" y="203">7 ready</text><text class="meta" x="300" y="203">builtin 6 · subagent 1</text>
+    <text class="strong" x="20" y="233">hooks</text><text class="text" x="150" y="233">2 ready</text><text class="meta" x="300" y="233">prompt-submit · before-tool</text>
+    <text class="strong" x="20" y="263">skills</text><text class="meta" x="150" y="263">not reported</text>
+    <text class="strong" x="20" y="293">mcp</text><text class="meta" x="150" y="293">not reported · never shown as loaded: 0</text>
+  </g>
+
+  <text class="section" x="40" y="930">RESPONSIVE FRAMES</text>
+  <g transform="translate(40 950)">
+    <rect class="screen" x="0" y="0" width="320" height="144" rx="4"/><text class="tiny" x="12" y="20">60 × 20 · MINIMAL</text><line class="hairline" x1="8" y1="30" x2="312" y2="30"/><text class="tiny" x="12" y="52">[PLAN]  sandbox: os</text><text class="tiny" x="12" y="75">◐ search_content running</text><text class="tiny" x="12" y="98">ctx 31% est</text><rect class="surface" x="8" y="112" width="304" height="23"/><text class="tiny" x="14" y="128">› Esc cancel</text>
+    <rect class="screen" x="345" y="0" width="440" height="176" rx="4"/><text class="tiny" x="357" y="20">80 × 24 · COMPACT</text><line class="hairline" x1="353" y1="30" x2="777" y2="30"/><text class="tiny" x="357" y="52">coragent  phase-7  [AUTO EDIT]</text><text class="tiny" x="357" y="77">● read_file …/parser/parser.go · 214 lines</text><text class="tiny" x="357" y="102">◆ edit_file …/parser/parser.go · approval</text><rect class="elevated" x="370" y="117" width="390" height="42" rx="3"/><text class="tiny" x="382" y="136">[a] allow [d] deny [e] edit [Esc] deny</text><text class="tiny" x="382" y="151">stacked permission sheet</text>
+    <rect class="screen" x="810" y="0" width="640" height="216" rx="4"/><text class="tiny" x="822" y="20">160 × 48 · WIDE</text><line class="hairline" x1="818" y1="30" x2="1442" y2="30"/><text class="tiny" x="822" y="53">one transcript column</text><rect class="surface" x="822" y="65" width="360" height="120" rx="2"/><text class="tiny" x="834" y="84">AGENT · transcript remains primary</text><text class="tiny" x="834" y="108">● tool rows stay compact</text><text class="tiny" x="834" y="132">◇ reasoning expands inline</text><rect class="elevated" x="1194" y="65" width="236" height="120" rx="2"/><text class="tiny" x="1206" y="84">INSPECTOR ON DEMAND</text><text class="tiny" x="1206" y="108">model · context</text><text class="tiny" x="1206" y="132">tools · hooks</text><text class="tiny" x="1206" y="156">skills/MCP if reported</text>
+  </g>
+
+  <text class="tiny" x="40" y="1174">Reference board only. Runtime is measured in cells, uses the host font, sanitizes terminal controls, and preserves meaning in no-color/ASCII modes.</text>
+</svg>

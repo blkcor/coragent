@@ -269,14 +269,14 @@ internals. Stories that change what the user sees on screen carry the
 
 - Any change to the harness or its public surface (Phases 1–6 own those).
 - **Themes / color schemes** beyond a single default — deferred (see §9).
-- **Mouse support** (scroll and click) — deferred (see §9).
+- **Mouse support beyond wheel-only transcript scrolling** — application clicks, selection, and dragging are deferred (see §9).
 - **Web frontend** — explicitly out of v1 ([`../architecture.md`](../architecture.md)
   §1 non-goals); the render-events-and-answer pattern here is the reference a
   future web frontend would reuse over a network transport.
 - One-shot non-interactive CLI mode — a separate frontend, not this phase.
 - Parallel-tool-execution UI — the harness is sequential in v1
   ([`../architecture.md`](../architecture.md) §7).
-- Slash commands / command palette and markdown rendering — candidate future work.
+- Slash commands / command palette — candidate future work.
 
 ## 6. Design Considerations
 
@@ -349,8 +349,8 @@ when this interactive session works end to end against a real harness session:
 4. Submit a request that triggers a gated edit; a **diff** is shown and a
    **permission prompt** appears; allowing it **applies the edit** and the turn
    resumes (the headline criterion).
-5. Toggling the mode cycles the **indicator** through auto-accept edits, plan, and
-   bypass, and back.
+5. `Shift+Tab` cycles the **indicator** through the three safe modes, while
+   `Ctrl+B` requires explicit confirmation before entering bypass.
 6. Pressing Esc mid-turn **cancels**; the UI returns to idle and accepts a new
    request.
 7. An induced error appears as a **notice** in the conversation and the app stays
@@ -373,20 +373,19 @@ And, per architecture §8–§9:
 ## 9. Open Questions
 
 - **Themes** — single default style in v1; pluggable color themes deferred.
-- **Mouse support** — scroll and click deferred to a later pass.
+- **Mouse support** — transcript history scrolling is mouse-wheel-only in v1 and remains independent of composer focus; keyboard history scrolling and scrollbar clicks/thumb dragging are deferred. Standard mouse reporting stays active. Unmodified drag performs pane-clipped application selection and OSC 52 copy, while terminal-native `Shift/Option+drag` remains the fallback.
 - **Web frontend** — out of v1 ([`../architecture.md`](../architecture.md) §1); the
   render-events-and-answer pattern here is the reference a future web frontend
   would re-implement over a network transport — strong evidence for the
   SDK-is-replaceable claim.
-- **Markdown rendering** — replies are plain text in v1; rich rendering is a
-  candidate enhancement.
+- **Markdown rendering** — assistant replies use progressive streaming-safe Markdown in v1: recognizable active constructs are styled from the first visible delta batch, only the shortest ambiguous suffix may remain literal, and completion converges to a deterministic full-source render.
 - **Slash commands / command palette** — in-input commands (e.g. clear, switch
   mode) are a possible ergonomic add, not required for v1.
-- **Diff robustness** — v1 assumes the edit tool's result is diff-shaped; if that
-  result format evolves, the diff view follows it.
+- **Diff robustness** — v1 consumes structured, bounded prepared-action previews;
+  it never parses a post-mutation result string and presents the guess as an
+  authoritative diff.
 - **Multiple sessions / tabs** — one session per program in v1; subagent work
   renders inline rather than in separate panes.
-- **Remembered-decision durability** — should remembered permission decisions
-  persist across app restarts, or stay session-scoped as in v1? Depends on Phase
-  3's remembered-rules durability ([`prd-phase-3-permission.md`](prd-phase-3-permission.md))
-  — to be confirmed at planning time.
+- **Remembered-decision durability** — the standard first-party bootstrap keeps
+  Phase 3 remembered-rule persistence. Per-call sandbox grants remain ephemeral
+  and are never written into remembered rules.
