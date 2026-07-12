@@ -204,6 +204,9 @@ type AppModel struct {
 	pendingSubmission   string
 	pendingContinuation bool
 
+	inputHistory []string
+	historyIdx   int
+
 	quitArmedAt  time.Time
 	animationOn  bool
 	closing      bool
@@ -1118,8 +1121,32 @@ func parseGrantDraft(value string, options GrantOptions) (SandboxGrants, error) 
 }
 
 func (model *AppModel) handleComposerKey(message tea.KeyPressMsg, key string) tea.Cmd {
-	if model.runState != RunIdle {
-		return nil
+	// History navigation: Up/Down recall previous submissions when there is
+	// no vertical room for cursor movement (single-line draft, or cursor at
+	// the first/last line boundary).
+	if !model.slashSuggest.active {
+		totalLines := model.composer.textarea.LineCount()
+		cursorLine := model.composer.textarea.Line()
+		switch key {
+		case "up", "ctrl+p":
+			if cursorLine == 0 && model.historyIdx > 0 {
+				model.historyIdx--
+				model.composer.SetValue(model.inputHistory[model.historyIdx])
+				model.slashSuggest.updateSuggestions(model.slash, model.composer.Value())
+				return nil
+			}
+		case "down", "ctrl+n":
+			if cursorLine >= totalLines-1 && model.historyIdx < len(model.inputHistory) {
+				model.historyIdx++
+				if model.historyIdx >= len(model.inputHistory) {
+					model.composer.SetValue("")
+				} else {
+					model.composer.SetValue(model.inputHistory[model.historyIdx])
+				}
+				model.slashSuggest.updateSuggestions(model.slash, model.composer.Value())
+				return nil
+			}
+		}
 	}
 
 	// Slash-suggestion navigation keys intercept before the composer.
@@ -1222,9 +1249,10 @@ func (model *AppModel) submitDraft() tea.Cmd {
 	model.transcript.AddUser(input, model.clock.Now())
 	model.noteLiveOutput()
 	model.pendingSubmission = input
+	model.inputHistory = append(model.inputHistory, input)
+	model.historyIdx = len(model.inputHistory)
 	model.pendingContinuation = false
 	model.composer.Reset()
-	model.composer.Blur()
 	model.runState = RunRunning
 	model.activity = ActivityThinking
 	model.quitArmedAt = time.Time{}
@@ -1351,7 +1379,7 @@ func (model *AppModel) noteLiveOutput() {
 }
 
 func (model *AppModel) routeToComposer() bool {
-	return model.permission == nil && model.overlay == nil && model.focus == FocusComposer && model.runState == RunIdle && !model.closing
+	return model.permission == nil && model.overlay == nil && model.focus == FocusComposer && !model.closing
 }
 
 func (model *AppModel) syncComposerFocus() tea.Cmd {
