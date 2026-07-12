@@ -934,3 +934,95 @@ func TestControlQClosesIdleSession(t *testing.T) {
 		t.Fatalf("shutdown did not close exactly once: closed=%v calls=%d", model.closed, port.closeCalls)
 	}
 }
+
+func TestInputHistorySubmitSavesToHistory(t *testing.T) {
+	model, port := newReadyApp(t, 80, 24)
+	_ = startFakeRun(t, model, port, "hello")
+
+	if len(model.inputHistory) != 1 || model.inputHistory[0] != "hello" {
+		t.Fatalf("history = %q, want [\"hello\"]", model.inputHistory)
+	}
+	if model.historyIdx != 1 {
+		t.Fatalf("historyIdx after submit = %d, want 1", model.historyIdx)
+	}
+}
+
+func TestInputHistoryUpRecallsPreviousSubmission(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+	model.inputHistory = []string{"hello"}
+	model.historyIdx = 1
+
+	model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if draft := model.composer.Value(); draft != "hello" {
+		t.Fatalf("composer after Up = %q, want \"hello\"", draft)
+	}
+	if model.historyIdx != 0 {
+		t.Fatalf("historyIdx after Up = %d, want 0", model.historyIdx)
+	}
+}
+
+func TestInputHistoryDownWalksForwardAndClears(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+	model.inputHistory = []string{"first", "second"}
+	model.historyIdx = 0
+	model.composer.SetValue("first")
+
+	model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if draft := model.composer.Value(); draft != "second" {
+		t.Fatalf("composer after Down = %q, want \"second\"", draft)
+	}
+	if model.historyIdx != 1 {
+		t.Fatalf("historyIdx after Down = %d, want 1", model.historyIdx)
+	}
+
+	model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if draft := model.composer.Value(); draft != "" {
+		t.Fatalf("composer after Down past newest = %q, want empty", draft)
+	}
+	if model.historyIdx != 2 {
+		t.Fatalf("historyIdx after clearing = %d, want 2", model.historyIdx)
+	}
+}
+
+func TestInputHistoryExcludesEmptySubmissions(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+
+	model.composer.SetValue("   ")
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if len(model.inputHistory) != 0 {
+		t.Fatalf("history after whitespace submit = %q, want empty", model.inputHistory)
+	}
+}
+
+func TestInputHistoryUpDoesNothingWithNoHistory(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+	model.composer.SetValue("typed draft")
+
+	model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if draft := model.composer.Value(); draft != "typed draft" {
+		t.Fatalf("composer changed to %q, want unchanged \"typed draft\"", draft)
+	}
+}
+
+func TestInputHistoryMultiLinePreservesCursorMovement(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+	model.inputHistory = []string{"previous input"}
+	model.historyIdx = 1
+
+	// Single-line draft at line 0: Up recalls history.
+	model.composer.SetValue("single")
+	model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if draft := model.composer.Value(); draft != "previous input" {
+		t.Fatalf("Up from line 0 = %q, want \"previous input\"", draft)
+	}
+
+	// Multiline draft, cursor at line 1: Up moves cursor within draft,
+	// does not recall history.
+	model.composer.SetValue("line one\nline two")
+	model.composer.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // move to line 1
+	model.Update(tea.KeyPressMsg{Code: tea.KeyUp})            // Up with cursor on line 1
+	if draft := model.composer.Value(); draft != "line one\nline two" {
+		t.Fatalf("Up from line 1 changed draft to %q", draft)
+	}
+}

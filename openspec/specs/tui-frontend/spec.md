@@ -58,6 +58,13 @@ transcript wheel scrolling, and terminal resize as a logical grapheme position,
 and rendering and editing MUST remain safe for
 CJK, combining marks, emoji, and other variable-cell-width Unicode text.
 
+When the composer has no vertical room for cursor movement (the draft is a single
+line, or the caret is at the top or bottom line boundary), pressing Up SHALL
+recall the most recent submitted input into the composer, replacing the current
+draft, and pressing Down SHALL walk forward through history toward the newest
+entry. When past the newest history entry, the composer SHALL clear to an empty
+draft.
+
 #### Scenario: Idle focused composer exposes the insertion point
 - **WHEN** the session is idle and the composer owns focus
 - **THEN** a real caret is visible at the current logical insertion point, including in an empty draft
@@ -87,6 +94,24 @@ CJK, combining marks, emoji, and other variable-cell-width Unicode text.
 - **WHEN** a draft contains CJK, emoji, combining sequences, or mixed narrow and wide characters
 - **THEN** cursor movement, insertion, deletion, wrapping, and caret placement use grapheme-safe terminal-cell semantics
 - **THEN** no operation splits a displayed grapheme, overwrites adjacent chrome, or panics
+
+#### Scenario: Up recalls previous input from history
+- **WHEN** the composer is focused, the slash-suggest dropdown is not active, the draft has no vertical room for cursor movement, and at least one previously submitted input exists
+- **THEN** pressing Up replaces the current composer value with the most recent submission
+- **THEN** pressing Up repeatedly walks backward through earlier submissions
+
+#### Scenario: Down walks forward through history
+- **WHEN** the composer is focused, no slash-suggest dropdown is active, the draft has no vertical room for cursor movement, and the user has navigated into history with Up
+- **THEN** pressing Down walks forward toward newer entries
+- **THEN** pressing Down past the newest entry clears the composer to an empty draft
+
+#### Scenario: Empty submissions are not saved to history
+- **WHEN** the user submits a draft consisting only of whitespace
+- **THEN** the submission is not appended to input history
+
+#### Scenario: Multi-line draft preserves vertical cursor movement
+- **WHEN** the composer contains a multi-line draft with room for vertical cursor movement above or below the caret
+- **THEN** pressing Up or Down moves the cursor within the draft rather than recalling history
 
 ### Requirement: Responsive layout across supported terminal classes
 The frontend SHALL preserve a usable transcript, status, safety state, and
@@ -1005,3 +1030,19 @@ chunk boundaries, accessibility fallbacks, and the SDK import boundary.
 - **WHEN** frontend verification executes
 - **THEN** an import audit rejects any `internal/*` dependency from `tui` or `cmd/coragent`
 - **THEN** cancellation, resize, streaming, permission, and shutdown tests pass under the Go race detector
+
+### Requirement: In-memory input history
+
+The frontend SHALL maintain an in-memory history of submitted inputs scoped to
+the current session. History entries SHALL be appended in submission order.
+History MUST NOT persist to disk and SHALL be lost on exit.
+
+#### Scenario: History accumulates across turns
+- **WHEN** the user submits "hello" in turn 1, then "world" in turn 2
+- **THEN** the history contains ["hello", "world"] in that order
+- **THEN** pressing Up twice from an empty composer in turn 3 recalls "hello"
+
+#### Scenario: History does not persist across sessions
+- **WHEN** the user exits the application and starts a new session
+- **THEN** no history from the previous session is available
+

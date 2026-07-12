@@ -53,8 +53,8 @@ func TestComposerCursorStaysVisibleWhileBrowsingHistory(t *testing.T) {
 	}
 
 	model.runState = RunRunning
-	if cursor := model.View().Cursor; cursor != nil {
-		t.Fatalf("disabled running composer exposed cursor at %+v", cursor.Position)
+	if cursor := model.View().Cursor; cursor == nil {
+		t.Fatal("composer cursor hidden during run — user cannot type while agent works")
 	}
 }
 
