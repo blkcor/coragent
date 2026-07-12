@@ -198,6 +198,8 @@ type AppModel struct {
 
 	permission          *permissionState
 	overlay             *overlayState
+	slash               *slashRegistry
+	slashSuggest        slashSuggestState
 	modeChangePending   bool
 	pendingSubmission   string
 	pendingContinuation bool
@@ -229,6 +231,7 @@ func NewAppModel(port SessionPort, options ...AppOption) *AppModel {
 		terminal:       TerminalState{Width: layout.Width, Height: layout.Height, Class: layout.Class},
 		layout:         layout,
 		transcript:     NewTranscriptStore(),
+		slash:          newSlashRegistry(),
 		activity:       ActivityIdle,
 		clipboardWrite: writeSystemClipboard,
 	}
@@ -794,6 +797,9 @@ func (model *AppModel) handleKey(message tea.KeyPressMsg) tea.Cmd {
 	}
 
 	if model.runState == RunBooting || model.runState == RunStartupError || model.runState == RunQuitting {
+		if key == "enter" {
+			return model.submitDraft()
+		}
 		return nil
 	}
 
@@ -1115,6 +1121,43 @@ func (model *AppModel) handleComposerKey(message tea.KeyPressMsg, key string) te
 	if model.runState != RunIdle {
 		return nil
 	}
+
+	// Slash-suggestion navigation keys intercept before the composer.
+	if model.slashSuggest.active {
+		switch key {
+		case "tab":
+			return model.acceptSlashSuggestion()
+		case "enter":
+			// Auto-complete the command name, preserving any arguments already typed.
+			if sel := model.slashSuggest.selectedCommand(); sel != nil {
+				draft := strings.TrimSpace(model.composer.Value())
+				rest := strings.TrimPrefix(draft, "/")
+				if spaceIdx := strings.Index(rest, " "); spaceIdx >= 0 {
+					rest = rest[spaceIdx:] // preserve " plan" etc.
+				} else {
+					rest = ""
+				}
+				model.composer.SetValue("/" + sel.Name + rest + " ")
+			}
+			model.slashSuggest.active = false
+			return model.submitDraft()
+		case "esc":
+			model.slashSuggest.active = false
+			return nil
+		case "up", "ctrl+p":
+			if len(model.slashSuggest.matches) > 0 {
+				model.slashSuggest.selected = max(0, model.slashSuggest.selected-1)
+			}
+			return nil
+		case "down", "ctrl+n":
+			if len(model.slashSuggest.matches) > 0 {
+				model.slashSuggest.selected = min(len(model.slashSuggest.matches)-1, model.slashSuggest.selected+1)
+			}
+			return nil
+		}
+	}
+
+	var cmd tea.Cmd
 	switch key {
 	case "ctrl+j", "shift+enter", "alt+enter":
 		model.composer.InsertString("\n")
@@ -1122,9 +1165,32 @@ func (model *AppModel) handleComposerKey(message tea.KeyPressMsg, key string) te
 		return model.submitDraft()
 	default:
 		message.Text = SanitizeString(message.Text)
-		return model.composer.Update(message)
+		cmd = model.composer.Update(message)
 	}
-	return nil
+
+	// After every composer mutation, recompute slash suggestions.
+	model.slashSuggest.updateSuggestions(model.slash, model.composer.Value())
+	return cmd
+}
+
+func (model *AppModel) acceptSlashSuggestion() tea.Cmd {
+	sel := model.slashSuggest.selectedCommand()
+	if sel == nil {
+		return nil
+	}
+	draft := model.composer.Value()
+	trimmed := strings.TrimSpace(draft)
+	// Find the slash-word prefix and replace it.
+	rest := strings.TrimPrefix(trimmed, "/")
+	spaceIdx := strings.Index(rest, " ")
+	if spaceIdx >= 0 {
+		rest = rest[spaceIdx:]
+	} else {
+		rest = ""
+	}
+	model.composer.SetValue("/" + sel.Name + rest + " ")
+	model.slashSuggest.active = false
+	return model.composer.Focus()
 }
 
 func (model *AppModel) submitDraft() tea.Cmd {
@@ -1134,6 +1200,21 @@ func (model *AppModel) submitDraft() tea.Cmd {
 		model.pendingContinuation = false
 		return model.syncComposerFocus()
 	}
+
+	// Slash commands: intercept /-prefixed input before agent submission.
+	if strings.HasPrefix(strings.TrimSpace(draft), "/") {
+		model.slashSuggest.active = false
+		model.pendingContinuation = false
+		shouldBlock := model.runState == RunBooting || model.runState == RunStartupError || model.runState == RunQuitting || model.closing
+		if shouldBlock && !isExitCommand(draft) {
+			model.composer.Reset()
+			return model.syncComposerFocus()
+		}
+		cmd := model.slash.Dispatch(model, draft)
+		model.composer.Reset()
+		return tea.Batch(cmd, model.syncComposerFocus())
+	}
+
 	if model.runState != RunIdle || strings.TrimSpace(draft) == "" || model.port == nil {
 		return nil
 	}
@@ -1285,7 +1366,11 @@ func (model *AppModel) syncComposerFocus() tea.Cmd {
 }
 
 func (model *AppModel) composerCursorRow() int {
-	return model.layout.Height - model.composerHeight(model.layout.ContentWidth)
+	row := model.layout.Height - model.composerHeight(model.layout.ContentWidth)
+	if model.slashSuggest.active {
+		row += min(len(model.slashSuggest.matches), 8)
+	}
+	return row
 }
 
 func (model *AppModel) render() string {
@@ -1720,7 +1805,11 @@ func (model *AppModel) composerHeight(width int) int {
 		return 0
 	}
 	maxRows := max(model.layout.ComposerMinRows, model.layout.ComposerMaxRows)
-	return min(maxRows, max(model.layout.ComposerMinRows, model.composer.Height()+2))
+	base := min(maxRows, max(model.layout.ComposerMinRows, model.composer.Height()+2))
+	if model.slashSuggest.active {
+		base += min(len(model.slashSuggest.matches), 8)
+	}
+	return base
 }
 
 func (model *AppModel) composerPlaceholder() string {
@@ -1738,10 +1827,76 @@ func (model *AppModel) composerPlaceholder() string {
 	}
 }
 
+func (model *AppModel) renderSlashSuggestions(width int, rows *int) []string {
+	if !model.slashSuggest.active || len(model.slashSuggest.matches) == 0 {
+		return nil
+	}
+	maxVisible := min(len(model.slashSuggest.matches), 8)
+	*rows -= maxVisible
+
+	glyph := "▶"
+	space := "  "
+	pad := " "
+	if model.theme.Mode.ASCII {
+		glyph = ">"
+	}
+
+	// Column widths: glyph (2) + name (max 20) + gap (1) + aliases (max 18) + gap (1) + description (rest)
+	lines := make([]string, 0, maxVisible)
+	for i, cmd := range model.slashSuggest.matches {
+		if i >= maxVisible {
+			break
+		}
+		marker := space
+		style := model.theme.MutedStyle
+		if i == model.slashSuggest.selected {
+			marker = glyph
+			style = model.theme.AccentStyle
+		}
+
+		aliasStr := ""
+		if len(cmd.Aliases) > 0 {
+			aliasParts := make([]string, len(cmd.Aliases))
+			for j, a := range cmd.Aliases {
+				aliasParts[j] = "/" + a
+			}
+			aliasStr = "(" + strings.Join(aliasParts, ", ") + ")"
+		}
+
+		namePart := "/" + cmd.Name
+		descPart := cmd.Description
+
+		// Layout: "▶ /name  (aliases)  description"
+		// Calculate available width for description after fixed columns.
+		fixed := CellWidth(marker) + 1 + CellWidth(namePart) + 1
+		if aliasStr != "" {
+			fixed += CellWidth(aliasStr) + 1
+		}
+		descWidth := max(0, width-fixed-1)
+		if descWidth > 0 && CellWidth(descPart) > descWidth {
+			descPart = ansi.Truncate(descPart, descWidth, model.theme.Glyphs.Ellipsis)
+		}
+
+		line := style.Render(marker) + pad + style.Render(namePart)
+		if aliasStr != "" {
+			line += pad + model.theme.MutedStyle.Render(aliasStr)
+		}
+		if descWidth > 0 && descPart != "" {
+			line += pad + model.theme.MutedStyle.Render(descPart)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func (model *AppModel) renderComposer(width, rows int) []string {
 	if rows <= 0 {
 		return nil
 	}
+
+	// Show slash-command suggestions above the composer inline.
+	suggestLines := model.renderSlashSuggestions(width, &rows)
+
 	rows = max(3, rows)
 	placeholder := model.composerPlaceholder()
 	if model.theme.Mode.ASCII {
@@ -1758,7 +1913,11 @@ func (model *AppModel) renderComposer(width, rows int) []string {
 		borderStyle = model.theme.AccentStyle
 	}
 	rule := strings.Repeat(model.theme.Border.Top, width)
-	lines := []string{borderStyle.Render(rule)}
+	lines := make([]string, 0, len(suggestLines)+2+innerRows)
+	for _, s := range suggestLines {
+		lines = append(lines, fitRendered(s, width))
+	}
+	lines = append(lines, borderStyle.Render(rule))
 	for index := 0; index < innerRows; index++ {
 		line := ""
 		if index < len(wrapped) {
