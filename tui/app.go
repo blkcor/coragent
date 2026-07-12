@@ -410,6 +410,14 @@ func (model *AppModel) handleStartup(message startupLoadedMsg) tea.Cmd {
 	if model.info.Mode == "" {
 		model.info.Mode = ModeUnsupported
 	}
+	// Dynamically register loaded skills as slash-command entries so they
+	// appear in the suggestion dropdown and can be invoked from the composer.
+	for _, cat := range model.info.Capabilities {
+		if cat.Kind == "skill" {
+			model.slash.RegisterSkills(cat.Items)
+			break
+		}
+	}
 	model.mode = model.info.Mode
 	model.runState = RunIdle
 	model.focus = FocusComposer
@@ -1170,6 +1178,7 @@ func (model *AppModel) handleComposerKey(message tea.KeyPressMsg, key string) te
 			return model.submitDraft()
 		case "esc":
 			model.slashSuggest.active = false
+			model.slashSuggest.suppressed = false
 			return nil
 		case "up", "ctrl+p":
 			if len(model.slashSuggest.matches) > 0 {
@@ -1217,6 +1226,9 @@ func (model *AppModel) acceptSlashSuggestion() tea.Cmd {
 	}
 	model.composer.SetValue("/" + sel.Name + rest + " ")
 	model.slashSuggest.active = false
+	// Suppress reactivation until the user edits the command word.
+	model.slashSuggest.suppressed = true
+	model.slashSuggest.lastQuery = sel.Name
 	return model.composer.Focus()
 }
 
@@ -1237,6 +1249,18 @@ func (model *AppModel) submitDraft() tea.Cmd {
 			model.composer.Reset()
 			return model.syncComposerFocus()
 		}
+
+		// Skill commands route to the agent run (ParseInvocations handles
+		// skill body injection as transient context). Built-in commands are
+		// dispatched locally.
+		trimmed := strings.TrimSpace(draft)
+		parts := strings.SplitN(trimmed[1:], " ", 2)
+		name := strings.TrimSpace(parts[0])
+		if cmd := model.slash.Lookup(name); cmd != nil && cmd.Kind == "skill" {
+			model.composer.Reset()
+			return model.submitToAgent(draft)
+		}
+
 		cmd := model.slash.Dispatch(model, draft)
 		model.composer.Reset()
 		return tea.Batch(cmd, model.syncComposerFocus())
@@ -1245,7 +1269,11 @@ func (model *AppModel) submitDraft() tea.Cmd {
 	if model.runState != RunIdle || strings.TrimSpace(draft) == "" || model.port == nil {
 		return nil
 	}
-	input := draft
+	return model.submitToAgent(draft)
+}
+
+// submitToAgent sends the input to the agent run and transitions to Running state.
+func (model *AppModel) submitToAgent(input string) tea.Cmd {
 	model.transcript.AddUser(input, model.clock.Now())
 	model.noteLiveOutput()
 	model.pendingSubmission = input
@@ -1869,7 +1897,6 @@ func (model *AppModel) renderSlashSuggestions(width int, rows *int) []string {
 		glyph = ">"
 	}
 
-	// Column widths: glyph (2) + name (max 20) + gap (1) + aliases (max 18) + gap (1) + description (rest)
 	lines := make([]string, 0, maxVisible)
 	for i, cmd := range model.slashSuggest.matches {
 		if i >= maxVisible {
@@ -1891,14 +1918,23 @@ func (model *AppModel) renderSlashSuggestions(width int, rows *int) []string {
 			aliasStr = "(" + strings.Join(aliasParts, ", ") + ")"
 		}
 
+		// Skill entries show a source badge ([user] or [project]) instead of aliases.
+		sourceStr := ""
+		if cmd.Kind == "skill" && cmd.Source != "" {
+			sourceStr = "[" + cmd.Source + "]"
+		}
+
 		namePart := "/" + cmd.Name
 		descPart := cmd.Description
 
-		// Layout: "▶ /name  (aliases)  description"
-		// Calculate available width for description after fixed columns.
+		// Layout: "▶ /name  (aliases|source)  description"
 		fixed := CellWidth(marker) + 1 + CellWidth(namePart) + 1
-		if aliasStr != "" {
-			fixed += CellWidth(aliasStr) + 1
+		badge := aliasStr
+		if badge == "" {
+			badge = sourceStr
+		}
+		if badge != "" {
+			fixed += CellWidth(badge) + 1
 		}
 		descWidth := max(0, width-fixed-1)
 		if descWidth > 0 && CellWidth(descPart) > descWidth {
@@ -1906,8 +1942,8 @@ func (model *AppModel) renderSlashSuggestions(width int, rows *int) []string {
 		}
 
 		line := style.Render(marker) + pad + style.Render(namePart)
-		if aliasStr != "" {
-			line += pad + model.theme.MutedStyle.Render(aliasStr)
+		if badge != "" {
+			line += pad + model.theme.MutedStyle.Render(badge)
 		}
 		if descWidth > 0 && descPart != "" {
 			line += pad + model.theme.MutedStyle.Render(descPart)

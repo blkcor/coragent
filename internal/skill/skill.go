@@ -56,9 +56,6 @@ func ParseSKILL(content []byte, dirName string, source SkillSource, sourcePath s
 	}
 
 	name := dirName
-	if fm.Name != "" {
-		name = fm.Name
-	}
 	if name == "" {
 		return nil, fmt.Errorf("skill at %s: empty name (no frontmatter name and no directory name)", sourcePath)
 	}

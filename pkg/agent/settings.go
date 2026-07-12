@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -72,9 +73,23 @@ func Bootstrap(settings Settings, opts BootstrapOptions) (*Session, error) {
 		skillUserRoot = resolved.SkillRoots.User
 		skillProjectRoot = resolved.SkillRoots.Project
 	}
+	// Resolve working directory and inject it into the system prompt so
+	// the model knows where it is running rather than guessing a path.
+	workingDirectory := opts.WorkingDirectory
+	if workingDirectory == "" {
+		workingDirectory, _ = os.Getwd()
+	}
+	if abs, err := filepath.Abs(workingDirectory); err == nil {
+		workingDirectory = filepath.Clean(abs)
+	}
+	systemPrompt := bootstrapSystemPrompt
+	if workingDirectory != "" {
+		systemPrompt = fmt.Sprintf("%s\n\nPrimary working directory: %s", bootstrapSystemPrompt, workingDirectory)
+	}
+
 	cfg := SessionConfig{
 		Provider:                 provider,
-		SystemPrompt:             bootstrapSystemPrompt,
+		SystemPrompt:             systemPrompt,
 		StreamOptions:            StreamOptions{Model: baseName, Temperature: cloneFloat(model.Temperature), MaxTokens: cloneInt(model.MaxTokens)},
 		ExternalHooks:            resolved.ExternalHooks(),
 		PermissionMode:           resolved.Permission.Mode,
