@@ -101,7 +101,11 @@ func TestOptionalCapabilityReporterDistinguishesSupportedEmpty(t *testing.T) {
 		Support: agent.CapabilitySupportSupported,
 		Source:  "test-runtime",
 	}}}
-	session := agent.NewSession(agent.SessionConfig{Provider: provider})
+	session := agent.NewSession(agent.SessionConfig{
+		Provider:        provider,
+		SkillRootUser:   "/nonexistent/skill-test-user",
+		SkillRootProject: "/nonexistent/skill-test-project",
+	})
 	description := session.Describe()
 
 	skills := capabilityCategory(t, description, agent.CapabilityKindSkill)

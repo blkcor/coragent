@@ -28,6 +28,18 @@ type Settings struct {
 	// Sandbox configures additive sandbox policy grants. Missing sandbox settings
 	// keep the safe baseline: project/scratch writes and network denied.
 	Sandbox *SandboxSettings `json:"sandbox,omitempty"`
+
+	// SkillRoots configures skill discovery paths. When absent, defaults are used.
+	SkillRoots *SkillRootSettings `json:"skill_roots,omitempty"`
+}
+
+// SkillRootSettings configures where skills are discovered.
+type SkillRootSettings struct {
+	// User is the path to user-level skills. Default: ~/.coragent/skills/
+	User string `json:"user,omitempty"`
+
+	// Project is the path to project-level skills. Default: .coragent/skills/
+	Project string `json:"project,omitempty"`
 }
 
 // PermissionSettings configures the permission engine. Each allow/deny entry is
@@ -280,6 +292,17 @@ func merge(dst, src Settings) Settings {
 		// at resolution time makes the order safe regardless.
 		dst.Permission.Allow = append(dst.Permission.Allow, src.Permission.Allow...)
 		dst.Permission.Deny = append(dst.Permission.Deny, src.Permission.Deny...)
+	}
+	if src.SkillRoots != nil {
+		if dst.SkillRoots == nil {
+			dst.SkillRoots = &SkillRootSettings{}
+		}
+		if src.SkillRoots.User != "" {
+			dst.SkillRoots.User = src.SkillRoots.User
+		}
+		if src.SkillRoots.Project != "" {
+			dst.SkillRoots.Project = src.SkillRoots.Project
+		}
 	}
 	if src.Sandbox != nil {
 		if dst.Sandbox == nil {
