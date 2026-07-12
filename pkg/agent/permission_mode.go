@@ -18,8 +18,9 @@ const (
 	PermissionModeBypass          PermissionMode = "bypass"
 )
 
-// ErrPermissionModeChangeInFlight is returned when a caller tries to change
-// permission posture during a run. A mode always governs a complete run.
+// ErrPermissionModeChangeInFlight is retained for source compatibility. Standard
+// sessions now support linearized live mode changes and no longer return it.
+// Deprecated: mode changes are allowed while a run is in flight.
 var ErrPermissionModeChangeInFlight = errors.New("agent: permission mode can change only between runs")
 
 // ErrPermissionModeExternallyOwned reports that a caller-supplied Dispatcher,
@@ -35,15 +36,14 @@ func (s *Session) PermissionMode() (PermissionMode, error) {
 	return publicPermissionMode(s.permission.Mode()), nil
 }
 
-// SetPermissionModeTyped changes the standard permission posture for the next
-// run. It never changes a run already in flight.
+// SetPermissionModeTyped changes the standard permission posture. The setter is
+// linearized by the permission engine: decisions that begin after it returns see
+// the new mode, while a permission request already open keeps its snapshotted
+// mode and still requires an explicit reply.
 func (s *Session) SetPermissionModeTyped(mode PermissionMode) error {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 
-	if s.inFlight.Load() {
-		return ErrPermissionModeChangeInFlight
-	}
 	if s.permission == nil {
 		return ErrPermissionModeExternallyOwned
 	}

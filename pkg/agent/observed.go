@@ -78,6 +78,7 @@ type (
 	ObservedError              = core.ObservedError
 	PermissionProtocol         = core.PermissionProtocol
 	PermissionCapabilities     = core.PermissionCapabilities
+	RememberedRuleScopeKind    = core.RememberedRuleScopeKind
 	RememberedRuleScope        = core.RememberedRuleScope
 	ObservedPermissionRequest  = core.ObservedPermissionRequest
 	PermissionReplyAction      = core.PermissionReplyAction
@@ -143,6 +144,9 @@ const (
 	ActionPreviewText        = core.ActionPreviewText
 	ActionPreviewFileDiff    = core.ActionPreviewFileDiff
 	ActionPreviewMetadata    = core.ActionPreviewMetadata
+
+	RememberedRuleScopeFamily = core.RememberedRuleScopeFamily
+	RememberedRuleScopeExact  = core.RememberedRuleScopeExact
 
 	DiffLineContext = core.DiffLineContext
 	DiffLineAdded   = core.DiffLineAdded

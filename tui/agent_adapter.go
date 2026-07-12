@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/blkcor/coragent/pkg/agent"
@@ -38,6 +41,7 @@ func (adapter *AgentSessionAdapter) Describe(ctx context.Context) (SessionInfo, 
 	mode, changeable := projectPermissionMode(description.Permission)
 	return SessionInfo{
 		Project:         description.WorkingDirectory,
+		Branch:          gitBranch(description.WorkingDirectory),
 		Model:           description.Model,
 		Provider:        description.Provider,
 		Mode:            mode,
@@ -45,7 +49,7 @@ func (adapter *AgentSessionAdapter) Describe(ctx context.Context) (SessionInfo, 
 		PermissionOwner: string(description.Permission.Ownership),
 		Sandbox:         projectSandbox(description.Sandbox.Posture),
 		SandboxReason:   description.Sandbox.Reason,
-		Context:         "ctx unknown",
+		Context:         "ctx 0%",
 		ContextWindow: OptionalCount{
 			Known: description.ContextWindow.Known,
 			Value: description.ContextWindow.Tokens,
@@ -54,6 +58,22 @@ func (adapter *AgentSessionAdapter) Describe(ctx context.Context) (SessionInfo, 
 		UsageSupport:            projectSupport(description.ProviderFeatures.Usage),
 		Capabilities:            projectCapabilities(description.Capabilities),
 	}, nil
+}
+
+func gitBranch(workDir string) string {
+	if workDir == "" {
+		return ""
+	}
+	head, err := os.ReadFile(filepath.Join(workDir, ".git", "HEAD"))
+	if err != nil {
+		return ""
+	}
+	ref := strings.TrimSpace(string(head))
+	const prefix = "ref: refs/heads/"
+	if strings.HasPrefix(ref, prefix) {
+		return strings.TrimPrefix(ref, prefix)
+	}
+	return ""
 }
 
 func projectSupport(value agent.CapabilitySupport) SupportState {
@@ -533,10 +553,10 @@ func projectPermissionPrompt(origin agent.Origin, request agent.ObservedPermissi
 	if err != nil {
 		return PermissionPrompt{}, err
 	}
+	// Keep the effective tool identity and arguments visible even when a preview
+	// supplies a deliberately concise summary. The structured preview remains a
+	// second, authoritative description rather than replacing the action itself.
 	action := strings.TrimSpace(strings.Join([]string{request.EffectiveCall.ToolName, arguments}, " "))
-	if request.Preview.Summary != "" {
-		action = request.Preview.Summary
-	}
 	boundRequest := request.Clone()
 	prompt := PermissionPrompt{
 		RequestID: string(request.RequestID),
@@ -563,7 +583,15 @@ func projectPermissionPrompt(origin agent.Origin, request agent.ObservedPermissi
 		},
 	}
 	if request.RememberedScope != nil {
-		prompt.RememberScope = strings.TrimSpace(formatActionKind(request.RememberedScope.Kind) + " " + request.RememberedScope.Match)
+		display := strings.TrimSpace(request.RememberedScope.Display)
+		if display == "" {
+			display = strings.TrimSpace(request.RememberedScope.Match)
+		}
+		if request.RememberedScope.ScopeKind == agent.RememberedRuleScopeExact {
+			prompt.RememberScope = display
+		} else {
+			prompt.RememberScope = strings.TrimSpace(formatActionKind(request.RememberedScope.Kind) + " " + display)
+		}
 	}
 	preview := projectActionPreview(request.Preview)
 	prompt.StructuredPreview = &preview
@@ -746,6 +774,15 @@ func formatActionPreview(preview agent.ActionPreview) string {
 	if preview.Operation != agent.ActionOperationUnknown && preview.Operation != "" {
 		prefix = string(preview.Operation) + " · "
 	}
+	appendOmission := func(value string) string {
+		if preview.Omission == nil {
+			return value
+		}
+		if value != "" {
+			value += "\n"
+		}
+		return value + "[preview incomplete; omitted content cannot be expanded]"
+	}
 	switch preview.Kind {
 	case agent.ActionPreviewUnavailable:
 		if preview.UnavailableReason != "" {
@@ -754,7 +791,7 @@ func formatActionPreview(preview agent.ActionPreview) string {
 		return prefix + "Preview unavailable"
 	case agent.ActionPreviewText:
 		if preview.Text != "" {
-			return prefix + preview.Text
+			return appendOmission(prefix + preview.Text)
 		}
 	case agent.ActionPreviewFileDiff:
 		if preview.FileDiff != nil {
@@ -786,17 +823,35 @@ func formatActionPreview(preview agent.ActionPreview) string {
 					builder.WriteString("\n" + prefix + line.Text)
 				}
 			}
-			if preview.Omission != nil {
-				builder.WriteString("\n[preview incomplete; omitted content cannot be expanded]")
-			}
-			return builder.String()
+			return appendOmission(builder.String())
 		}
+	case agent.ActionPreviewMetadata:
+		var builder strings.Builder
+		builder.WriteString(prefix)
+		builder.WriteString(preview.Summary)
+		keys := make([]string, 0, len(preview.Metadata))
+		for key := range preview.Metadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if builder.Len() > 0 {
+				builder.WriteByte('\n')
+			}
+			builder.WriteString(key)
+			builder.WriteString(": ")
+			builder.WriteString(preview.Metadata[key])
+		}
+		if builder.Len() == 0 && len(preview.Targets) > 0 {
+			builder.WriteString(prefix + strings.Join(preview.Targets, ", "))
+		}
+		return appendOmission(builder.String())
 	}
 	if preview.Summary != "" {
-		return prefix + preview.Summary
+		return appendOmission(prefix + preview.Summary)
 	}
 	if len(preview.Targets) > 0 {
-		return prefix + strings.Join(preview.Targets, ", ")
+		return appendOmission(prefix + strings.Join(preview.Targets, ", "))
 	}
-	return strings.TrimSuffix(prefix, " · ")
+	return appendOmission(strings.TrimSuffix(prefix, " · "))
 }

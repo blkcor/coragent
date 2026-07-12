@@ -118,11 +118,12 @@ func (model *AppModel) reconcileTranscriptScroll() {
 func (model *AppModel) handleMouseWheel(message tea.MouseWheelMsg) tea.Cmd {
 	if model.permission != nil {
 		if model.permission.View == permissionDecision {
+			_, maxScroll := model.permissionReviewScrollMetrics()
 			switch message.Mouse().Button {
 			case tea.MouseWheelUp:
-				model.permission.Scroll = max(0, model.permission.Scroll-transcriptMouseWheelDelta)
+				model.permission.Scroll = max(0, model.permission.Scroll-1)
 			case tea.MouseWheelDown:
-				model.permission.Scroll += transcriptMouseWheelDelta
+				model.permission.Scroll = min(maxScroll, model.permission.Scroll+1)
 			}
 		}
 		return nil

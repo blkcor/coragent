@@ -12,6 +12,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -231,10 +232,10 @@ type PermissionRequest struct {
 	// Reason states what the action is and why approval is needed, for the prompt.
 	Reason string
 
-	// RememberedRule is the "<kind>:<match>" rule a Remember decision would persist
-	// for this call, or "" when the action cannot be safely generalized (e.g. a
-	// compound shell command). The frontend can show it so the human sees what
-	// "remember" will save before answering.
+	// RememberedRule is the family rule or versioned exact-call fingerprint a
+	// Remember decision would persist. Exact rules contain only a keyed
+	// fingerprint, never raw arguments or key material. The frontend can show a
+	// safe scope label before answering.
 	RememberedRule string
 
 	// ReplyPath is how to send the decision back.
@@ -409,4 +410,25 @@ type LifecycleHooks interface {
 // path. emit returns a non-nil error when the context is cancelled.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, call ToolCall, emit func(RunEvent) error) (ToolResult, error)
+}
+
+const suffix1M = "[1m]"
+
+// ModelBaseName strips a trailing [1m] window-size suffix, leaving the
+// provider-facing model identifier unchanged.
+func ModelBaseName(name string) string {
+	return strings.TrimSuffix(name, suffix1M)
+}
+
+// ModelContextWindow derives the prompt-cache / context-window size from a
+// trailing convention: "[1m]" → 1 000 000, otherwise 200 000. An empty model
+// name returns 0 (window unknown).
+func ModelContextWindow(name string) int {
+	if name == "" {
+		return 0
+	}
+	if strings.HasSuffix(name, suffix1M) {
+		return 1_000_000
+	}
+	return 200_000
 }

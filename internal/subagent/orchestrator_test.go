@@ -57,6 +57,36 @@ func TestParseRequestValidatesAndNormalizesArguments(t *testing.T) {
 	}
 }
 
+func TestTaskPreviewResolvesChildToolsWithoutStartingRuntime(t *testing.T) {
+	catalog := tools.NewDefaultCatalog()
+	handler := NewTaskHandler(NewBlueprint(BlueprintConfig{
+		Catalog: catalog, Advertised: catalog.Advertise(),
+		// Provider is intentionally nil: preview must not construct or start a child.
+	}))
+	preview, err := handler.PreviewAction(context.Background(), map[string]interface{}{
+		"label": "audit", "instruction": strings.Repeat("界", 300),
+	})
+	if err != nil {
+		t.Fatalf("PreviewAction: %v", err)
+	}
+	if preview.Kind != core.ActionPreviewMetadata || preview.Kind == core.ActionPreviewUnavailable {
+		t.Fatalf("preview = %+v", preview)
+	}
+	if preview.Metadata["child_tools"] != "read_file, search_content, find_files" {
+		t.Fatalf("default child tools = %q", preview.Metadata["child_tools"])
+	}
+	if got := []rune(preview.Metadata["instruction_summary"]); len(got) != 241 || got[len(got)-1] != '…' {
+		t.Fatalf("bounded instruction summary has %d runes", len(got))
+	}
+
+	explicit, err := handler.PreviewAction(context.Background(), map[string]interface{}{
+		"label": "read", "instruction": "inspect", "tools": []interface{}{"find_files"},
+	})
+	if err != nil || explicit.Metadata["child_tools"] != "find_files" {
+		t.Fatalf("explicit preview=%+v err=%v", explicit, err)
+	}
+}
+
 func TestInvalidTaskArgumentsDoNotStartChildOrEmitLifecycle(t *testing.T) {
 	invalid := []map[string]interface{}{
 		{"instruction": "work"},

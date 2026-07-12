@@ -449,6 +449,28 @@ func TestAppendPermissionRule_DenyAndCreateWhenMissing(t *testing.T) {
 	}
 }
 
+func TestAppendPermissionRule_ExactDigestRoundTripsWithoutArguments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	rule := "exact-v2:read:hmac-sha256:" + strings.Repeat("a", 64)
+	if err := AppendPermissionRule(path, true, rule); err != nil {
+		t.Fatalf("append exact rule: %v", err)
+	}
+	reloaded, err := loadFromFile(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Permission == nil || len(reloaded.Permission.Allow) != 1 || reloaded.Permission.Allow[0] != rule {
+		t.Fatalf("exact rule round-trip = %+v", reloaded.Permission)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "instruction") || strings.Contains(string(data), "secret") {
+		t.Fatalf("settings persisted raw exact-call arguments: %s", data)
+	}
+}
+
 // --- sandbox settings ------------------------------------------------------
 
 func TestLoadFromFile_SandboxSection(t *testing.T) {

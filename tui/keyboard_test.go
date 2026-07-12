@@ -7,32 +7,27 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestNewlineAliasHelpRequiresKeyboardDisambiguation(t *testing.T) {
+func TestEnhancedNewlineAliasWorksWithoutPersistentHintRow(t *testing.T) {
 	model, _ := newReadyApp(t, 120, 36)
-	if hints := model.renderHints(model.layout.ContentWidth); strings.Contains(hints, "Shift+Enter") {
-		t.Fatalf("legacy help advertised enhanced alias: %q", hints)
-	}
-
 	updated, _ := model.Update(tea.KeyboardEnhancementsMsg{Flags: 1})
 	model = updated.(*AppModel)
-	if hints := model.renderHints(model.layout.ContentWidth); !strings.Contains(hints, "Shift+Enter") {
-		t.Fatalf("enhanced help omitted supported alias: %q", hints)
+	model.composer.SetValue("first")
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	if got := model.composer.Value(); got != "first\n" {
+		t.Fatalf("enhanced Shift+Enter draft = %q", got)
+	}
+	if view := stripANSI(model.View().Content); strings.Contains(view, "Shift+Enter") || strings.Contains(view, "Ctrl+J newline") {
+		t.Fatalf("persistent shortcut hint returned:\n%s", view)
 	}
 }
 
-func TestIdleHintsAdvertiseWheelHistoryAndTerminalSelection(t *testing.T) {
+func TestIdleShellOmitsPersistentShortcutLegend(t *testing.T) {
 	model, _ := newReadyApp(t, 120, 36)
-	hints := stripANSI(model.renderHints(200))
-	for _, want := range []string{"wheel history", "drag auto-copy", "Shift/Option+drag"} {
-		if !strings.Contains(hints, want) {
-			t.Fatalf("idle hints omitted %q: %q", want, hints)
+	view := stripANSI(model.View().Content)
+	for _, noise := range []string{"Enter send", "Ctrl+J newline", "Shift+Tab mode", "wheel history", "drag auto-copy", "Shift/Option+drag"} {
+		if strings.Contains(view, noise) {
+			t.Fatalf("idle shell still renders %q:\n%s", noise, view)
 		}
-	}
-	if strings.Contains(hints, "Cmd+C copy") {
-		t.Fatalf("idle hints promised an OS-owned shortcut: %q", hints)
-	}
-	if strings.Contains(hints, "PgUp") || strings.Contains(hints, "PgDown") {
-		t.Fatalf("idle hints still advertise keyboard history scrolling: %q", hints)
 	}
 }
 

@@ -327,13 +327,20 @@ func (e *Executor) prepare(ctx context.Context, handler core.ToolHandler, call c
 			UnavailableReason: "the tool handler does not support side-effect-free action preparation",
 		},
 	}
+	rawPreview := prepared.Preview
 	if handlerWithPreparation, ok := handler.(core.PreparedActionHandler); ok {
 		candidate, err := handlerWithPreparation.Prepare(ctx, cloneArgumentMap(call.Arguments))
 		if err != nil {
 			return core.PreparedAction{}, err
 		}
-		prepared = candidate.Clone()
-		prepared.CommitToken = candidate.CommitToken
+		// Preserve the handler's opaque identity token exactly, but never Clone the
+		// untrusted preview before it passes through the shared projection budget.
+		prepared = core.PreparedAction{
+			EffectiveArguments: cloneArgumentMap(candidate.EffectiveArguments),
+			Operation:          candidate.Operation,
+			CommitToken:        candidate.CommitToken,
+		}
+		rawPreview = candidate.Preview
 		if prepared.EffectiveArguments == nil {
 			prepared.EffectiveArguments = cloneArgumentMap(call.Arguments)
 		}
@@ -343,19 +350,24 @@ func (e *Executor) prepare(ctx context.Context, handler core.ToolHandler, call c
 		if prepared.Operation == core.ActionOperationUnknown {
 			prepared.Operation = operationForAction(classify(handler))
 		}
-		if prepared.Preview.Operation == core.ActionOperationUnknown {
-			prepared.Preview.Operation = prepared.Operation
+	} else if previewer, ok := handler.(core.ActionPreviewer); ok {
+		preview, err := previewer.PreviewAction(ctx, cloneArgumentMap(call.Arguments))
+		if err != nil {
+			return core.PreparedAction{}, err
 		}
+		rawPreview = preview
+	}
+	if rawPreview.Operation == core.ActionOperationUnknown {
+		rawPreview.Operation = prepared.Operation
 	}
 	if emit == nil {
+		prepared.Preview = boundActionPreview(rawPreview)
 		return prepared, nil
 	}
+	prepared.Preview = boundActionPreviewWithIdentity(rawPreview, previewOmissionIdentity{
+		valid: true, callID: callID, revision: revision, correlation: string(callID),
+	})
 	preview := prepared.Preview.Clone()
-	if preview.Omission != nil {
-		preview.Omission.CallID = callID
-		preview.Omission.Revision = revision
-		preview.Omission.CorrelationID = string(callID)
-	}
 	effectiveCall := cloneCall(call)
 	effectiveCall.Arguments = cloneArgumentMap(prepared.EffectiveArguments)
 	if err := emit(core.RichEvent{

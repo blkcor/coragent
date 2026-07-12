@@ -74,11 +74,21 @@ type SessionConfig struct {
 	// Ignored when a custom Dispatcher is supplied.
 	PermissionMode string
 
-	// PermissionAllow and PermissionDeny are the starting allow/deny rule lists,
-	// each entry a "<kind>:<match>" string (e.g. "command:git status"). Ignored
+	// PermissionAllow and PermissionDeny are the starting allow/deny rule lists.
+	// Each entry is either a family rule in "<kind>:<match>" form (for example,
+	// "command:git status") or an exact rule in
+	// "exact-v2:<kind>:hmac-sha256:<64-lowercase-hex>" form. Unsafe legacy
+	// exact-v1 entries remain parseable for migration but never auto-match; the
+	// standard disk-loading path scrubs them before resolving settings. Ignored
 	// when a custom Dispatcher is supplied.
 	PermissionAllow []string
 	PermissionDeny  []string
+
+	// PermissionFingerprintKey injects stable secret material for reloadable
+	// exact-call rules. The zero value uses a session-ephemeral key unless
+	// PersistRememberedRules is set, in which case the standard constructor
+	// securely loads or creates the user's independent 0600 key file.
+	PermissionFingerprintKey PermissionFingerprintKey
 
 	// PersistRememberedRules, when set, durably writes a remembered decision to the
 	// project settings file so it survives a restart. Ignored when a custom
@@ -193,6 +203,27 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds in
 	if cfg.Dispatcher != nil {
 		return cfg.Dispatcher, nil, cfg.Tools, SandboxStatus{}, nil
 	}
+	if cfg.PersistRememberedRules {
+		if err := config.ScrubLegacyExactPermissionRules(); err != nil {
+			return nil, nil, nil, SandboxStatus{}, fmt.Errorf("agent: migrate legacy exact permission rules: %w", err)
+		}
+	}
+	if cfg.PersistRememberedRules && !cfg.PermissionFingerprintKey.Valid() {
+		loaded, err := config.LoadOrCreatePermissionFingerprintKey()
+		if err != nil {
+			return nil, nil, nil, SandboxStatus{}, fmt.Errorf("agent: load permission fingerprint key: %w", err)
+		}
+		material := loaded.ConsumeMaterial()
+		key, err := NewPermissionFingerprintKey(material)
+		clear(material)
+		if err != nil {
+			return nil, nil, nil, SandboxStatus{}, err
+		}
+		cfg.PermissionFingerprintKey = key
+		if loaded.InvalidatesExactRules() {
+			cfg = filterPermissionRulesAfterKeyReset(cfg)
+		}
+	}
 
 	catalog := tools.NewDefaultCatalog()
 	for _, h := range cfg.ToolHandlers {
@@ -235,14 +266,21 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds in
 	return executor.New(catalog, stages, 0), eng, advertised, sbox.Status(), nil
 }
 
+func filterPermissionRulesAfterKeyReset(cfg SessionConfig) SessionConfig {
+	cfg.PermissionAllow = config.FilterPermissionRulesAfterKeyReset(cfg.PermissionAllow)
+	cfg.PermissionDeny = config.FilterPermissionRulesAfterKeyReset(cfg.PermissionDeny)
+	return cfg
+}
+
 // buildEngine constructs the permission engine from the config: starting mode,
 // rule lists, and (optionally) persistence of remembered rules to the project
 // settings file. An invalid mode string falls back to the default posture.
 func buildEngine(cfg SessionConfig) *permission.Engine {
 	mode, _ := permission.ParseMode(cfg.PermissionMode)
 	pcfg := permission.Config{
-		Mode:  mode,
-		Rules: permission.ParseRules(cfg.PermissionAllow, cfg.PermissionDeny, nil),
+		Mode:           mode,
+		Rules:          permission.ParseRules(cfg.PermissionAllow, cfg.PermissionDeny, nil),
+		FingerprintKey: cfg.PermissionFingerprintKey,
 	}
 	if cfg.PersistRememberedRules {
 		pcfg.Save = func(allow bool, rule string) error {
@@ -277,13 +315,11 @@ func buildSandbox(cfg SessionConfig) (*sandboxpkg.Sandbox, error) {
 	return sbox, nil
 }
 
-// SetPermissionMode changes the permission posture for subsequent turns. It is
-// intended to be called between turns. It errors on an unknown mode or when the
-// session was built with a custom Dispatcher (which owns its own permission).
+// SetPermissionMode changes the permission posture for subsequent permission
+// decisions, including during an active run. A request already open keeps the
+// mode it snapshotted. It errors on an unknown mode or when the session was built
+// with a custom Dispatcher (which owns its own permission).
 func (s *Session) SetPermissionMode(mode string) error {
-	if s.inFlight.Load() {
-		return ErrPermissionModeChangeInFlight
-	}
 	m, err := permission.ParseMode(mode)
 	if err != nil {
 		return err

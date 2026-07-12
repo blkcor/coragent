@@ -33,7 +33,7 @@ type inspectorEntry struct {
 }
 
 func (model *AppModel) openOverlay(kind overlayKind) tea.Cmd {
-	if model.permission != nil {
+	if model.permission != nil && kind != overlayBypass {
 		return nil
 	}
 	model.overlay = &overlayState{Kind: kind}
@@ -58,10 +58,6 @@ func (model *AppModel) handleOverlayKey(_ tea.KeyPressMsg, key string) tea.Cmd {
 		case "esc", "n":
 			return model.closeOverlay()
 		case "enter", "y":
-			if model.runState != RunIdle {
-				model.overlay.Feedback = "mode can change only between runs"
-				return nil
-			}
 			if !model.info.ModeChangeable || model.mode == ModeExternal || model.mode == ModeUnsupported || model.port == nil {
 				model.overlay.Feedback = "permission mode is controlled externally"
 				return nil
@@ -114,19 +110,22 @@ func (model *AppModel) overlayEntries() []inspectorEntry {
 	}
 	if model.overlay.Kind == overlayHelp {
 		return []inspectorEntry{
-			{Text: "Composer"},
-			{Text: "  Enter send · Ctrl+J newline"},
-			{Text: "  Shift+Enter / Alt+Enter newline only with enhanced keyboard reporting"},
-			{Text: "Session"},
-			{Text: "  Esc or Ctrl+C cancel active work · Ctrl+Q bounded shutdown"},
-			{Text: "  Shift+Tab cycles DEFAULT → AUTO EDIT → PLAN (idle only)"},
-			{Text: "  Ctrl+B opens explicit BYPASS confirmation (idle only)"},
-			{Text: "Overlays"},
-			{Text: "  Ctrl+I inspector · Ctrl+/ help · Esc close overlay"},
-			{Text: "History and copy"},
-			{Text: "  Mouse wheel only browses transcript history; keyboard history scrolling is disabled"},
-			{Text: "  Unmodified drag selects and copies inside this pane"},
-			{Text: "  Shift/Option+drag is the terminal-native selection fallback"},
+			{Text: "Compose"},
+			{Text: "  Enter  send"},
+			{Text: "  Ctrl+J  newline"},
+			{Text: "  Shift+Enter / Alt+Enter  newline with enhanced keyboard reporting"},
+			{Text: "Run"},
+			{Text: "  Shift+Tab  cycle DEFAULT / AUTO EDIT / PLAN"},
+			{Text: "  Ctrl+B  review BYPASS"},
+			{Text: "  Esc / Ctrl+C  interrupt active work"},
+			{Text: "Inspect"},
+			{Text: "  Ctrl+I  open run inspector"},
+			{Text: "  Ctrl+/  open this key index"},
+			{Text: "Terminal"},
+			{Text: "  Wheel  browse task history"},
+			{Text: "  Drag  select and copy in this pane"},
+			{Text: "  Shift/Option+drag  terminal-native selection fallback"},
+			{Text: "  Ctrl+Q  bounded shutdown"},
 		}
 	}
 	return model.inspectorEntries()
@@ -277,9 +276,9 @@ func (model *AppModel) renderOverlay(width, rows int) []string {
 		return model.renderBypassConfirmation(width, rows)
 	}
 	entries := model.overlayEntries()
-	title := "Keyboard help"
+	title := "HELP / KEYS"
 	if model.overlay.Kind == overlayInspector {
-		title = "Session inspector"
+		title = "INSPECT / RUN LEDGER"
 	}
 	bodyRows := max(1, rows-3)
 	maxTop := max(0, len(entries)-bodyRows)
@@ -292,7 +291,10 @@ func (model *AppModel) renderOverlay(width, rows int) []string {
 	model.overlay.Scroll = min(max(0, model.overlay.Scroll), maxTop)
 	end := min(len(entries), model.overlay.Scroll+bodyRows)
 	rule := strings.Repeat(model.theme.Border.Top, width)
-	lines := []string{model.theme.BorderStyle.Render(rule), model.theme.AccentStyle.Render(ansi.Truncate(title, width, ""))}
+	lines := []string{
+		renderElevatedLine(model.theme, model.theme.BorderStyle, rule, width),
+		renderElevatedLine(model.theme, model.theme.AccentStyle, ansi.Truncate(title, width, ""), width),
+	}
 	for index := model.overlay.Scroll; index < end; index++ {
 		prefix := "  "
 		style := model.theme.TextStyle
@@ -300,16 +302,16 @@ func (model *AppModel) renderOverlay(width, rows int) []string {
 			prefix = model.theme.Glyphs.Focus + " "
 			style = model.theme.AccentStyle
 		}
-		lines = append(lines, style.Render(ansi.Truncate(prefix+SanitizeString(entries[index].Text), width, model.theme.Glyphs.Ellipsis)))
+		lines = append(lines, renderElevatedLine(model.theme, style, ansi.Truncate(prefix+SanitizeString(entries[index].Text), width, model.theme.Glyphs.Ellipsis), width))
 	}
 	for len(lines) < rows-1 {
-		lines = append(lines, "")
+		lines = append(lines, renderElevatedLine(model.theme, model.theme.TextStyle, "", width))
 	}
-	footer := "Esc close"
+	footer := "Esc  close"
 	if model.overlay.Kind == overlayInspector {
-		footer = "↑/↓ inspect · Enter expand · Esc close"
+		footer = "↑/↓  inspect   Enter  expand   Esc  close"
 	}
-	lines = append(lines, model.theme.MutedStyle.Render(ansi.Truncate(footer, width, "")))
+	lines = append(lines, renderElevatedLine(model.theme, model.theme.MutedStyle, ansi.Truncate(footer, width, ""), width))
 	if len(lines) > rows {
 		lines = append(lines[:rows-1], lines[len(lines)-1])
 	}
@@ -318,10 +320,10 @@ func (model *AppModel) renderOverlay(width, rows int) []string {
 
 func (model *AppModel) renderBypassConfirmation(width, rows int) []string {
 	content := []string{
-		"Confirm BYPASS mode",
+		"REVIEW / BYPASS",
 		"Permission prompts may be skipped for tool calls.",
 		"Hard hooks still block unconditionally, and sandbox confinement still applies.",
-		"This setting affects later runs until you leave bypass.",
+		"This applies to later tool decisions until you leave bypass.",
 		"",
 		"[y/Enter] Enable bypass    [n/Esc] Keep current mode",
 	}

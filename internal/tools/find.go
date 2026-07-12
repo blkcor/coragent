@@ -53,6 +53,38 @@ func (FindFiles) RunsCommands() bool { return false }
 
 func (FindFiles) ActionKind() core.ActionKind { return core.ActionRead }
 
+// PreviewAction validates the glob and describes the effective walk without
+// touching the filesystem.
+func (FindFiles) PreviewAction(_ context.Context, args map[string]interface{}) (core.ActionPreview, error) {
+	pattern, ok := stringArg(args, "pattern")
+	if !ok || pattern == "" {
+		return core.ActionPreview{}, fmt.Errorf("find_files: pattern is required")
+	}
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return core.ActionPreview{}, fmt.Errorf("find_files: invalid pattern %q: %w", pattern, err)
+	}
+	root := "."
+	if value, exists := stringArg(args, "root"); exists && value != "" {
+		root = value
+	}
+	skipped := make([]string, 0, len(noiseDirs))
+	for name := range noiseDirs {
+		skipped = append(skipped, name)
+	}
+	sort.Strings(skipped)
+	return core.ActionPreview{
+		Kind:      core.ActionPreviewMetadata,
+		Operation: core.ActionOperationCustom,
+		Summary:   "Find files under " + root,
+		Targets:   []string{root},
+		Metadata: map[string]string{
+			"pattern":             pattern,
+			"root":                root,
+			"skipped_directories": strings.Join(skipped, ", "),
+		},
+	}, nil
+}
+
 func (FindFiles) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	pattern, ok := stringArg(args, "pattern")
 	if !ok || pattern == "" {
@@ -106,3 +138,5 @@ func (FindFiles) Execute(_ context.Context, args map[string]interface{}) (string
 	sort.Strings(matches)
 	return strings.Join(matches, "\n"), nil
 }
+
+var _ core.ActionPreviewer = FindFiles{}

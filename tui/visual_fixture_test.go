@@ -52,7 +52,7 @@ func TestCanonicalRenderUsesExactTerminalGeometry(t *testing.T) {
 	}
 }
 
-func TestConversationPreviewUsesClaudeStyleFlow(t *testing.T) {
+func TestConversationPreviewUsesRunLedgerFlow(t *testing.T) {
 	tests := []struct {
 		name   string
 		width  int
@@ -79,9 +79,9 @@ func TestConversationPreviewUsesClaudeStyleFlow(t *testing.T) {
 					t.Fatalf("row %d rendered %d cells, want %d: %q", row, width, test.width, line)
 				}
 			}
-			for _, forbidden := range []string{"YOU", "AGENT"} {
-				if strings.Contains(plain, forbidden) {
-					t.Fatalf("rendered legacy role label %q\n%s", forbidden, rendered)
+			for _, required := range []string{"who are you", "STEP 01"} {
+				if !strings.Contains(plain, required) {
+					t.Fatalf("run ledger lost stable label %q\n%s", required, rendered)
 				}
 			}
 			if !strings.Contains(plain, "who are you") || !strings.Contains(plain, "I am Coragent") {
@@ -95,6 +95,12 @@ func TestConversationPreviewUsesClaudeStyleFlow(t *testing.T) {
 			if !test.mode.ASCII && strings.Contains(plain, "- inspect") {
 				t.Fatalf("conversation preview kept a raw list marker\n%s", rendered)
 			}
+			if strings.Contains(plain, "Read 1,155 lines") {
+				t.Fatalf("successful tool expanded into the primary ledger\n%s", rendered)
+			}
+			if strings.Contains(plain, "Enter send · Ctrl+J") || strings.Contains(plain, "wheel history ·") {
+				t.Fatalf("permanent key-hint row returned\n%s", rendered)
+			}
 			if test.mode.ASCII {
 				for _, character := range ansi.Strip(rendered) {
 					if character > 127 {
@@ -105,7 +111,7 @@ func TestConversationPreviewUsesClaudeStyleFlow(t *testing.T) {
 
 			output := ""
 			if directory := os.Getenv("CORAGENT_PREVIEW_DIR"); directory != "" {
-				output = filepath.Join(directory, fmt.Sprintf("coragent-claude-layout-%dx%d.ansi", test.width, test.height))
+				output = filepath.Join(directory, fmt.Sprintf("coragent-run-ledger-%dx%d.ansi", test.width, test.height))
 			} else if test.name == "standard" {
 				output = os.Getenv("CORAGENT_PREVIEW_OUT")
 			}
@@ -202,7 +208,12 @@ func canonicalPreviewModel(t *testing.T, width, height int, mode VisualMode) *Ap
 		Action:    "Modify cmd/coragent/main.go",
 		Reason:    "wire the public bootstrap into the Bubble Tea application",
 		Origin:    "root agent",
-		Preview:   "r1 · +74 -2",
+		Preview:   "custom · Preview unavailable: the tool handler does not support safe preparation",
+		StructuredPreview: &ActionPreview{
+			Kind:              "unavailable",
+			Operation:         "custom",
+			UnavailableReason: "the tool handler does not support safe preparation",
+		},
 		Reply: func(_ context.Context, _ PermissionDecision) (PermissionReplyResult, error) {
 			return PermissionReplyResult{Status: ReplyAccepted}, nil
 		},

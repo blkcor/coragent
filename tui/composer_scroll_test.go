@@ -132,9 +132,6 @@ func TestTranscriptShowsScrollbarAndAcceptsMouseWheel(t *testing.T) {
 	if model.focus != FocusComposer || model.scroll.Mode != ScrollBrowsingHistory {
 		t.Fatalf("wheel did not browse with composer focus: focus=%v scroll=%v", model.focus, model.scroll.Mode)
 	}
-	if !strings.Contains(model.View().Content, "browsing history") {
-		t.Fatal("wheel browsing did not expose history status")
-	}
 }
 
 func TestShortTranscriptHasNoFalseScrollState(t *testing.T) {

@@ -2,13 +2,26 @@ package permission
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/blkcor/coragent/internal/core"
 )
+
+func testFingerprintKey(t *testing.T, seed string) FingerprintKey {
+	t.Helper()
+	raw := sha256.Sum256([]byte(seed))
+	key, err := NewFingerprintKey(raw[:])
+	if err != nil {
+		t.Fatalf("NewFingerprintKey: %v", err)
+	}
+	return key
+}
 
 // --- mode and rule parsing --------------------------------------------------
 
@@ -47,6 +60,93 @@ func TestParseRule(t *testing.T) {
 	}
 	if _, err := ParseRule("nope:x"); err == nil {
 		t.Error("ParseRule must reject an unknown kind")
+	}
+	if _, err := ParseRule("exact-v3:read:hmac-sha256:" + strings.Repeat("0", 64)); err == nil {
+		t.Error("ParseRule must reject an unknown exact-call version")
+	}
+	if _, err := ParseRule("exact-v2:read:sha256:" + strings.Repeat("0", 64)); err == nil {
+		t.Error("ParseRule must reject an unkeyed v2 algorithm")
+	}
+	if legacy, err := ParseRule("exact-v1:read:sha256:" + strings.Repeat("0", 64)); err != nil || legacy.exactScheme != exactRuleLegacySHA256 {
+		t.Fatalf("legacy v1 rule should remain parseable for safe migration: rule=%+v err=%v", legacy, err)
+	}
+}
+
+func TestExactRuleMatchesCanonicalCallIdentity(t *testing.T) {
+	key := testFingerprintKey(t, "canonical-match-key")
+	call := core.ToolCall{ToolName: "search_content", Arguments: map[string]interface{}{
+		"pattern": "needle", "ignore_case": true,
+	}}
+	digest, err := exactCallFingerprint(key, core.ActionRead, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := ParseRule("exact-v2:read:hmac-sha256:" + digest)
+	if err != nil {
+		t.Fatalf("ParseRule exact: %v", err)
+	}
+	equivalent := core.ToolCall{ID: "different-call-id", ToolName: "search_content", Arguments: map[string]interface{}{
+		"ignore_case": true, "pattern": "needle",
+	}}
+	if !rule.matches(key, core.ActionRead, equivalent) {
+		t.Fatal("canonical key order and call ID must not change an exact match")
+	}
+	if rule.Matches(core.ActionRead, equivalent) {
+		t.Fatal("keyed exact rule must not match through the keyless compatibility method")
+	}
+	wrongTool := equivalent
+	wrongTool.ToolName = "other_search"
+	if rule.matches(key, core.ActionRead, wrongTool) {
+		t.Fatal("exact rule matched a different tool name")
+	}
+	wrongArgs := equivalent
+	wrongArgs.Arguments = map[string]interface{}{"pattern": "other", "ignore_case": true}
+	if rule.matches(key, core.ActionRead, wrongArgs) {
+		t.Fatal("exact rule matched different effective arguments")
+	}
+	if rule.matches(key, core.ActionCommand, equivalent) {
+		t.Fatal("exact rule matched a different action kind")
+	}
+}
+
+func TestLegacyExactV1RulesFailSafeWithoutMatching(t *testing.T) {
+	legacy := "exact-v1:read:sha256:" + strings.Repeat("a", 64)
+	parsed, err := ParseRule(legacy)
+	if err != nil {
+		t.Fatalf("ParseRule legacy: %v", err)
+	}
+	call := core.ToolCall{ToolName: "search_content", Arguments: map[string]interface{}{"pattern": "a"}}
+	if parsed.matches(testFingerprintKey(t, "legacy-skip-key"), core.ActionRead, call) {
+		t.Fatal("legacy unkeyed digest must never match")
+	}
+	rules := ParseRules([]string{legacy}, []string{legacy}, nil)
+	if len(rules.Allow) != 0 || len(rules.Deny) != 0 {
+		t.Fatalf("legacy rules must be skipped during migration: %+v", rules)
+	}
+}
+
+func TestExactFingerprintRequiresSecretKeyInsteadOfPlainHashGuessing(t *testing.T) {
+	call := core.ToolCall{ToolName: "custom_tool", Arguments: map[string]interface{}{"token": "1234"}}
+	keyA := testFingerprintKey(t, "offline-oracle-a")
+	keyB := testFingerprintKey(t, "offline-oracle-b")
+	fingerprintA, err := exactCallFingerprint(keyA, core.ActionUnknown, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprintB, err := exactCallFingerprint(keyB, core.ActionUnknown, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := canonicalExactCall(core.ActionUnknown, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := sha256.Sum256(canonical)
+	if fingerprintA == fmt.Sprintf("%x", plain[:]) {
+		t.Fatal("exact fingerprint regressed to an offline-verifiable plain SHA-256 digest")
+	}
+	if fingerprintA == fingerprintB {
+		t.Fatal("the same settings guess must produce different fingerprints under different secret keys")
 	}
 }
 
@@ -240,6 +340,74 @@ func TestSetModeSwitchesBetweenTurns(t *testing.T) {
 	}
 }
 
+func TestLiveModeSwitchLinearizesWithoutResolvingOpenPrompt(t *testing.T) {
+	e := New(Config{Mode: ModeDefault})
+	call := core.ToolCall{ToolName: "run_command", Arguments: map[string]interface{}{"command": "git status"}}
+	requests := make(chan core.ObservedPermissionRequest, 1)
+	firstResult := make(chan core.RichPermissionResult, 1)
+	go func() {
+		firstResult <- e.DecideRich(context.Background(), core.RichPermissionInput{
+			CallID: "call-1", Revision: 1, EffectiveCall: call, Action: core.ActionCommand,
+			Preview: core.ActionPreview{Kind: core.ActionPreviewText},
+		}, func(event core.RichEvent) error {
+			requests <- event.Payload.(*core.PermissionRequestedPayload).Request
+			return nil
+		})
+	}()
+
+	request := <-requests
+	if request.Mode != "default" {
+		t.Fatalf("open request mode = %q", request.Mode)
+	}
+	e.SetMode(ModeBypass)
+	second := e.DecideRich(context.Background(), core.RichPermissionInput{
+		CallID: "call-2", Revision: 1, EffectiveCall: call, Action: core.ActionCommand,
+	}, func(core.RichEvent) error {
+		t.Fatal("decision begun after bypass setter unexpectedly prompted")
+		return nil
+	})
+	if second.Action != core.PermissionReplyAllow {
+		t.Fatalf("post-setter decision = %+v", second)
+	}
+	decision := core.ObservedPermissionDecision{
+		RequestID: request.RequestID, CallID: request.CallID, Revision: request.Revision,
+		Action: core.PermissionReplyDeny,
+	}
+	if reply := request.Reply(context.Background(), decision); reply.Status != core.PermissionReplyAccepted {
+		t.Fatalf("reply to pre-setter prompt = %+v", reply)
+	}
+	if first := <-firstResult; first.Action != core.PermissionReplyDeny {
+		t.Fatalf("open prompt was retroactively approved: %+v", first)
+	}
+}
+
+func TestModeAccessIsRaceSafeWithConcurrentDecisions(t *testing.T) {
+	e := New(Config{Mode: ModeBypass})
+	call := core.ToolCall{ToolName: "read_file", Arguments: map[string]interface{}{"path": "README.md"}}
+	var wait sync.WaitGroup
+	wait.Add(3)
+	go func() {
+		defer wait.Done()
+		for index := 0; index < 1_000; index++ {
+			if index%2 == 0 {
+				e.SetMode(ModeBypass)
+			} else {
+				e.SetMode(ModePlan)
+			}
+		}
+	}()
+	for worker := 0; worker < 2; worker++ {
+		go func() {
+			defer wait.Done()
+			for index := 0; index < 1_000; index++ {
+				_ = e.Mode()
+				_ = e.Decide(context.Background(), call, core.ActionRead, silentEmit)
+			}
+		}()
+	}
+	wait.Wait()
+}
+
 // --- rules ------------------------------------------------------------------
 
 func TestAllowRuleRunsWithoutAsking(t *testing.T) {
@@ -354,6 +522,163 @@ func TestRememberAddsRuleImmediatelyAndPersists(t *testing.T) {
 	}
 }
 
+func TestExactRememberFallbackCoversCallsWithoutFamilyScope(t *testing.T) {
+	tests := []struct {
+		name string
+		kind core.ActionKind
+		call core.ToolCall
+	}{
+		{name: "search without path", kind: core.ActionRead, call: core.ToolCall{ToolName: "search_content", Arguments: map[string]interface{}{"pattern": "TOP-SECRET-SEARCH"}}},
+		{name: "find root argument", kind: core.ActionRead, call: core.ToolCall{ToolName: "find_files", Arguments: map[string]interface{}{"pattern": "*TOP-SECRET-FIND*", "root": "."}}},
+		{name: "task instruction", kind: core.ActionRead, call: core.ToolCall{ToolName: "task", Arguments: map[string]interface{}{"label": "audit", "instruction": "TOP-SECRET-INSTRUCTION"}}},
+		{name: "compound command", kind: core.ActionCommand, call: core.ToolCall{ToolName: "run_command", Arguments: map[string]interface{}{"command": "echo TOP-SECRET-COMMAND && pwd"}}},
+		{name: "unknown custom", kind: core.ActionUnknown, call: core.ToolCall{ToolName: "custom_tool", Arguments: map[string]interface{}{"token": "TOP-SECRET-TOKEN"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := testFingerprintKey(t, "persisted-"+test.name)
+			var saved string
+			e := New(Config{Mode: ModeDefault, FingerprintKey: key, Save: func(_ bool, rule string) error {
+				saved = rule
+				return nil
+			}})
+			result := e.Decide(context.Background(), test.call, test.kind, answerEmit(core.PermissionDecision{Allow: true, Remember: true}))
+			if !result.Allow {
+				t.Fatal("remembered exact call was denied")
+			}
+			if !strings.HasPrefix(saved, "exact-v2:"+kindLabel(test.kind)+":hmac-sha256:") || strings.Contains(saved, "TOP-SECRET") {
+				t.Fatalf("persisted exact rule leaked call content: %q", saved)
+			}
+			prompted := false
+			repeat := e.Decide(context.Background(), test.call, test.kind, func(event core.RunEvent) error {
+				if event.Type == core.PermissionRequestedEvent {
+					prompted = true
+				}
+				return nil
+			})
+			if !repeat.Allow || prompted {
+				t.Fatalf("same exact call was not remembered: allow=%v prompted=%v", repeat.Allow, prompted)
+			}
+			reloaded := New(Config{Mode: ModeDefault, FingerprintKey: key, Rules: ParseRules([]string{saved}, nil, nil)})
+			persistedPrompted := false
+			persisted := reloaded.Decide(context.Background(), test.call, test.kind, func(event core.RunEvent) error {
+				if event.Type == core.PermissionRequestedEvent {
+					persistedPrompted = true
+					reply := event.Permission.ReplyPath
+					go func() { reply <- core.PermissionDecision{Allow: false} }()
+				}
+				return nil
+			})
+			if !persisted.Allow || persistedPrompted {
+				t.Fatalf("persisted exact rule after reload: result=%+v prompted=%v", persisted, persistedPrompted)
+			}
+			different := test.call
+			different.Arguments = make(map[string]interface{}, len(test.call.Arguments)+1)
+			for key, value := range test.call.Arguments {
+				different.Arguments[key] = value
+			}
+			different.Arguments["different"] = true
+			differentPrompted := false
+			_ = reloaded.Decide(context.Background(), different, test.kind, func(event core.RunEvent) error {
+				if event.Type == core.PermissionRequestedEvent {
+					differentPrompted = true
+					reply := event.Permission.ReplyPath
+					go func() { reply <- core.PermissionDecision{Allow: false} }()
+				}
+				return nil
+			})
+			if !differentPrompted {
+				t.Fatal("different effective arguments matched exact rule")
+			}
+
+			wrongKey := New(Config{
+				Mode: ModeDefault, FingerprintKey: testFingerprintKey(t, "wrong-"+test.name),
+				Rules: ParseRules([]string{saved}, nil, nil),
+			})
+			wrongKeyPrompted := false
+			_ = wrongKey.Decide(context.Background(), test.call, test.kind, func(event core.RunEvent) error {
+				if event.Type == core.PermissionRequestedEvent {
+					wrongKeyPrompted = true
+					go func() { event.Permission.ReplyPath <- core.PermissionDecision{Allow: false} }()
+				}
+				return nil
+			})
+			if !wrongKeyPrompted {
+				t.Fatal("settings fingerprint matched without the originating secret key")
+			}
+		})
+	}
+}
+
+func TestEphemeralExactRememberWorksInSessionButIsNotPersisted(t *testing.T) {
+	call := core.ToolCall{ToolName: "custom_tool", Arguments: map[string]interface{}{"token": "session-only"}}
+	var saved []string
+	e := New(Config{Mode: ModeDefault, Save: func(_ bool, rule string) error {
+		saved = append(saved, rule)
+		return nil
+	}})
+	result := e.Decide(context.Background(), call, core.ActionUnknown, answerEmit(core.PermissionDecision{Allow: true, Remember: true}))
+	if !result.Allow {
+		t.Fatal("ephemeral exact remember approval was denied")
+	}
+	prompted := false
+	repeat := e.Decide(context.Background(), call, core.ActionUnknown, func(event core.RunEvent) error {
+		prompted = event.Type == core.PermissionRequestedEvent
+		return nil
+	})
+	if !repeat.Allow || prompted {
+		t.Fatalf("ephemeral exact remember did not apply immediately: result=%+v prompted=%v", repeat, prompted)
+	}
+	if len(saved) != 0 {
+		t.Fatalf("ephemeral exact fingerprint must not be persisted: %v", saved)
+	}
+}
+
+func TestRichExactScopeIsSafeAndRememberable(t *testing.T) {
+	call := core.ToolCall{ToolName: "search_content", Arguments: map[string]interface{}{"pattern": "TOP-SECRET-RICH"}}
+	var saved string
+	e := New(Config{
+		Mode: ModeDefault, FingerprintKey: testFingerprintKey(t, "rich-exact-key"),
+		Save: func(_ bool, rule string) error { saved = rule; return nil },
+	})
+	result := e.DecideRich(context.Background(), core.RichPermissionInput{
+		CallID: "call-1", Revision: 1, EffectiveCall: call, Action: core.ActionRead,
+		Preview: core.ActionPreview{Kind: core.ActionPreviewMetadata},
+	}, func(event core.RichEvent) error {
+		request := event.Payload.(*core.PermissionRequestedPayload).Request
+		if !request.Capabilities.Remember || request.RememberedScope == nil || request.RememberedScope.ScopeKind != core.RememberedRuleScopeExact {
+			t.Fatalf("exact remember capability = %+v", request)
+		}
+		if request.RememberedScope.ToolName != "search_content" || strings.Contains(request.RememberedScope.Match, "TOP-SECRET") || strings.Contains(request.RememberedScope.Display, "sha256") {
+			t.Fatalf("unsafe exact scope = %+v", request.RememberedScope)
+		}
+		decision := core.ObservedPermissionDecision{
+			RequestID: request.RequestID, CallID: request.CallID, Revision: request.Revision,
+			Action: core.PermissionReplyAllow, Remember: true,
+		}
+		if reply := request.Reply(context.Background(), decision); reply.Status != core.PermissionReplyAccepted {
+			t.Fatalf("reply = %+v", reply)
+		}
+		return nil
+	})
+	if result.Action != core.PermissionReplyAllow || !strings.HasPrefix(saved, "exact-v2:read:hmac-sha256:") || strings.Contains(saved, "TOP-SECRET") {
+		t.Fatalf("result=%+v saved=%q", result, saved)
+	}
+}
+
+func TestExactDenyStillWinsOverExactAllow(t *testing.T) {
+	call := core.ToolCall{ToolName: "task", Arguments: map[string]interface{}{"label": "x", "instruction": "same"}}
+	key := testFingerprintKey(t, "exact-deny-key")
+	rule, _, ok := rememberedRule(key, core.ActionRead, call)
+	if !ok || rule.ExactDigest == "" {
+		t.Fatalf("exact rule = %+v ok=%v", rule, ok)
+	}
+	e := New(Config{Mode: ModeDefault, FingerprintKey: key, Rules: RuleSet{Allow: []Rule{rule}, Deny: []Rule{rule}}})
+	if result := e.Decide(context.Background(), call, core.ActionRead, silentEmit); result.Allow || result.Reason != "denied by rule" {
+		t.Fatalf("deny did not win: %+v", result)
+	}
+}
+
 func TestRememberedDenialAddsDenyRuleImmediatelyAndPersists(t *testing.T) {
 	var saved []string
 	var savedAllow []bool
@@ -457,8 +782,9 @@ func TestPermissionRequestCarriesRememberedRule(t *testing.T) {
 	}
 }
 
-func TestPermissionRequestNoRememberedRuleForCompound(t *testing.T) {
-	// A compound command has no honest generalization, so the preview is empty.
+func TestPermissionRequestCarriesExactRuleForCompound(t *testing.T) {
+	// A compound command has no honest family generalization, so the preview uses
+	// a secret-free exact-call fingerprint instead.
 	e := New(Config{Mode: ModeDefault})
 	previewed := "unset"
 	emit := func(ev core.RunEvent) error {
@@ -470,8 +796,8 @@ func TestPermissionRequestNoRememberedRuleForCompound(t *testing.T) {
 		return nil
 	}
 	e.Decide(context.Background(), cmdCall("pwd && ls"), core.ActionCommand, emit)
-	if previewed != "" {
-		t.Errorf("a compound command must have no remembered-rule preview, got %q", previewed)
+	if !strings.HasPrefix(previewed, "exact-v2:command:hmac-sha256:") || strings.Contains(previewed, "pwd") || strings.Contains(previewed, "ls") {
+		t.Errorf("compound command exact rule = %q", previewed)
 	}
 }
 
@@ -531,28 +857,34 @@ func TestDenyStillCatchesCompoundLeadingCommand(t *testing.T) {
 // --- honest remembered-rule derivation --------------------------------------
 
 func TestRememberDerivesHonestRule(t *testing.T) {
-	cases := []struct{ name, cmd, want string }{ // want "" means nothing is persisted
-		{"flag not captured as subcommand", "mkdir -p /home/user", "command:mkdir"},
-		{"path-like arg not captured", "rustc fibonacci.rs -o out", "command:rustc"},
-		{"bareword subcommand kept", "git status --short", "command:git status"},
-		{"second bareword kept", "which cargo rustc", "command:which cargo"},
-		{"single program", "ls", "command:ls"},
-		{"chained not remembered", "pwd && ls", ""},
-		{"piped not remembered", "cat a | grep b", ""},
-		{"redirect not remembered", "echo hi > f", ""},
+	cases := []struct {
+		name, cmd, want string
+		exact           bool
+	}{
+		{name: "flag not captured as subcommand", cmd: "mkdir -p /home/user", want: "command:mkdir"},
+		{name: "path-like arg not captured", cmd: "rustc fibonacci.rs -o out", want: "command:rustc"},
+		{name: "bareword subcommand kept", cmd: "git status --short", want: "command:git status"},
+		{name: "second bareword kept", cmd: "which cargo rustc", want: "command:which cargo"},
+		{name: "single program", cmd: "ls", want: "command:ls"},
+		{name: "chained gets exact fallback", cmd: "pwd && ls", exact: true},
+		{name: "piped gets exact fallback", cmd: "cat a | grep b", exact: true},
+		{name: "redirect gets exact fallback", cmd: "echo hi > f", exact: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var saved []string
-			e := New(Config{Mode: ModeDefault, Save: func(_ bool, r string) error { saved = append(saved, r); return nil }})
+			e := New(Config{
+				Mode: ModeDefault, FingerprintKey: testFingerprintKey(t, "honest-rule-"+tc.name),
+				Save: func(_ bool, r string) error { saved = append(saved, r); return nil },
+			})
 			res := e.Decide(context.Background(), cmdCall(tc.cmd), core.ActionCommand,
 				answerEmit(core.PermissionDecision{Allow: true, Remember: true}))
 			if !res.Allow {
 				t.Fatalf("approve must allow %q", tc.cmd)
 			}
-			if tc.want == "" {
-				if len(saved) != 0 {
-					t.Errorf("%q must not persist a rule, got %v", tc.cmd, saved)
+			if tc.exact {
+				if len(saved) != 1 || !strings.HasPrefix(saved[0], "exact-v2:command:hmac-sha256:") || strings.Contains(saved[0], tc.cmd) {
+					t.Errorf("%q exact rule = %v", tc.cmd, saved)
 				}
 				return
 			}

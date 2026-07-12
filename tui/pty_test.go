@@ -30,11 +30,10 @@ func TestPTYCriticalInteractionAndTerminalRestoration(t *testing.T) {
 		t.Fatalf("resize PTY: %v", err)
 	}
 	child.write(t, "\x1b[?1u") // Kitty keyboard capability response.
-	child.waitFor(t, "Shift+Enter newline", 2*time.Second)
 	// Edit around the real caret, insert the guaranteed Ctrl+J newline, and
 	// bracket-paste another line without submitting it.
 	child.write(t, "ac\x1b[Db\x0atask\x1b[200~\npasted\x1b[201~\r")
-	child.waitFor(t, "Permission required", 4*time.Second)
+	child.waitFor(t, "REVIEW", 4*time.Second)
 
 	// Background history keys and wheel input are routed to the modal, then the
 	// argument editor submits a revision without approving it.
@@ -42,13 +41,13 @@ func TestPTYCriticalInteractionAndTerminalRestoration(t *testing.T) {
 	child.write(t, "e")
 	child.waitFor(t, "Edit arguments", 2*time.Second)
 	child.write(t, "\x13") // Ctrl+S
-	child.waitFor(t, "preview r2", 3*time.Second)
-	child.write(t, "a")
+	child.waitFor(t, "revision 2 review ready", 3*time.Second)
+	child.write(t, "\x1b[B\r") // Down selects Allow & remember, Enter confirms it.
 	child.waitFor(t, "succeeded", 3*time.Second)
 
 	// Help exposes the pointer-only history and terminal-native copy fallback.
 	child.write(t, "\x1f") // Ctrl+/
-	child.waitFor(t, "Keyboard help", 2*time.Second)
+	child.waitFor(t, "HELP / KEYS", 2*time.Second)
 	child.waitFor(t, "Shift/Option+drag", 2*time.Second)
 	child.write(t, "\x1b")
 
@@ -65,8 +64,12 @@ func TestPTYCriticalInteractionAndTerminalRestoration(t *testing.T) {
 	child.waitFor(t, "AUTO EDIT", 2*time.Second)
 	child.write(t, "cancel me\r")
 	child.waitFor(t, "assistant output", 2*time.Second)
+	helpOffset := len(child.output())
+	child.write(t, "\x1f") // Ctrl+/ opens help while the run is still active.
+	child.waitForAfter(t, "HELP / KEYS", helpOffset, 2*time.Second)
 	child.write(t, "\x03") // Ctrl+C
-	child.waitFor(t, "assistant output cancelled", 3*time.Second)
+	child.write(t, "\x1b") // Escape closes help without becoming the cancel key.
+	child.waitForAfter(t, "assistant output cancelled", helpOffset, 3*time.Second)
 	child.write(t, "\x11") // Ctrl+Q
 
 	if err := child.wait(4 * time.Second); err != nil {
@@ -194,6 +197,7 @@ func (port *ptyFixturePort) Run(ctx context.Context, input string) (<-chan UIEve
 		if decision.Decision == DecisionReviseArguments {
 			stream <- UIEvent{Kind: EventToolPrepared, CallID: "pty-call", ToolName: "write_file", Arguments: `{"path":"fixture.txt"}`, Revision: 2, Preview: richDiffPreview()}
 			stream <- UIEvent{Kind: EventPermissionRequested, CallID: "pty-call", Permission: ptyPrompt("pty-request-2", 2, decisions)}
+			stream <- UIEvent{Kind: EventNotice, Text: "revision 2 review ready"}
 			decision = <-decisions
 		}
 		if decision.Decision == DecisionAllowOnce || decision.Decision == DecisionAllowRemember {
@@ -209,8 +213,8 @@ func ptyPrompt(requestID string, revision uint64, decisions chan<- PermissionRes
 	return &PermissionPrompt{
 		RequestID: requestID, CallID: "pty-call", Revision: revision, Tool: "write_file",
 		Action: "modify fixture.txt", Arguments: `{"path":"fixture.txt"}`, Reason: "PTY fixture", Origin: "root agent",
-		Protocol: "rich", Preview: "modify fixture.txt", StructuredPreview: richDiffPreview(),
-		Capabilities: PermissionCapabilities{Allow: true, Deny: true, ReviseArguments: true, SchemaAwareEdit: true, Preview: true},
+		Protocol: "rich", Preview: "modify fixture.txt", RememberScope: "edit fixture.txt", StructuredPreview: richDiffPreview(),
+		Capabilities: PermissionCapabilities{Allow: true, Deny: true, Remember: true, ReviseArguments: true, SchemaAwareEdit: true, Preview: true},
 		RichReply: func(_ context.Context, decision PermissionResponse) (PermissionReplyResult, error) {
 			decisions <- decision
 			return PermissionReplyResult{Status: ReplyAccepted}, nil
@@ -292,6 +296,24 @@ func (child *ptyChild) waitFor(t *testing.T, value string, timeout time.Duration
 		}
 	}
 	t.Fatalf("PTY output did not contain %q\n%s", value, child.output())
+}
+
+func (child *ptyChild) waitForAfter(t *testing.T, value string, offset int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		output := child.output()
+		if offset < len(output) && strings.Contains(output[offset:], value) {
+			return
+		}
+		select {
+		case err := <-child.done:
+			child.waitErr = err
+			t.Fatalf("PTY helper exited before new %q: %v\n%s", value, err, output)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Fatalf("PTY output after offset %d did not contain %q\n%s", offset, value, child.output())
 }
 
 func (child *ptyChild) wait(timeout time.Duration) error {

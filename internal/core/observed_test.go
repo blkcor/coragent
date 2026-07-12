@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -192,6 +193,35 @@ func TestCapabilityCategoryCloneAndUnknownStates(t *testing.T) {
 }
 
 func TestLegacyObservedPermissionOnlyAdvertisesSafeLiveOperations(t *testing.T) {
+	t.Run("exact remembered rule exposes safe scope only", func(t *testing.T) {
+		replies := make(chan PermissionDecision, 1)
+		request := NewLegacyObservedPermissionRequest("request-1", "call-1", PermissionRequest{
+			ToolCall: ToolCall{ID: "provider-call", ToolName: "task", Arguments: map[string]interface{}{
+				"instruction": "TOP-SECRET-INSTRUCTION",
+			}},
+			RememberedRule: "exact-v2:read:hmac-sha256:" + strings.Repeat("a", 64),
+			ReplyPath:      replies,
+		})
+		if !request.Capabilities.Remember || request.RememberedScope == nil || request.RememberedScope.ScopeKind != RememberedRuleScopeExact {
+			t.Fatalf("exact scope unavailable: %+v", request)
+		}
+		if request.RememberedScope.ToolName != "task" || strings.Contains(request.RememberedScope.Display, "TOP-SECRET") || strings.Contains(request.RememberedScope.Display, "aaaa") {
+			t.Fatalf("exact scope leaked identity material: %+v", request.RememberedScope)
+		}
+	})
+
+	t.Run("unsafe legacy exact rule does not offer remember", func(t *testing.T) {
+		replies := make(chan PermissionDecision, 1)
+		request := NewLegacyObservedPermissionRequest("request-v1", "call-v1", PermissionRequest{
+			ToolCall:       ToolCall{ToolName: "task"},
+			RememberedRule: "exact-v1:read:sha256:" + strings.Repeat("a", 64),
+			ReplyPath:      replies,
+		})
+		if request.Capabilities.Remember || request.RememberedScope != nil {
+			t.Fatalf("legacy unkeyed exact rule must fail safe: %+v", request)
+		}
+	})
+
 	t.Run("malformed remembered rule stays unsupported and answerable", func(t *testing.T) {
 		replies := make(chan PermissionDecision, 1)
 		request := NewLegacyObservedPermissionRequest("request-1", "call-1", PermissionRequest{
