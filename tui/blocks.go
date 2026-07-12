@@ -18,6 +18,7 @@ const (
 	BlockTool
 	BlockSubagent
 	BlockNotice
+	BlockRichNotice
 )
 
 type ToolBlockState uint8
@@ -607,6 +608,20 @@ func (store *TranscriptStore) AddNotice(text string, at time.Time) {
 	})
 }
 
+// AddRichNotice stores a pre-styled notice line without sanitization. The text
+// may contain ANSI escape sequences; it is the caller's responsibility to
+// ensure they are safe. Unlike ordinary notices, rich notices are rendered
+// without the WarningStyle wrapper so embedded styles are preserved.
+func (store *TranscriptStore) AddRichNotice(text string, at time.Time) {
+	store.ensureIndexes()
+	store.appendBlock(TranscriptBlock{
+		ID:        store.generatedID("richnotice"),
+		Kind:      BlockRichNotice,
+		Timestamp: at,
+		Text:      text,
+	})
+}
+
 func cloneActionPreview(preview *ActionPreview) *ActionPreview {
 	if preview == nil {
 		return nil
@@ -883,7 +898,7 @@ func (store *TranscriptStore) CurrentTaskNumber() int {
 }
 
 func (store *TranscriptStore) renderBlock(theme Theme, block TranscriptBlock, width, frame int) []string {
-	completed := block.Kind == BlockUser || block.Kind == BlockNotice ||
+	completed := block.Kind == BlockUser || block.Kind == BlockNotice || block.Kind == BlockRichNotice ||
 		(block.Kind == BlockAssistant && !block.Streaming) ||
 		(block.Kind == BlockTool && block.ToolState >= ToolDone) ||
 		(block.Kind == BlockSubagent && block.SubagentOutcome != "")
@@ -1148,6 +1163,14 @@ func renderTranscriptBlockCached(theme Theme, block TranscriptBlock, width, fram
 			wrapped[index] = theme.WarningStyle.Render(wrapped[index])
 		}
 		return wrapped
+	case BlockRichNotice:
+		if width < 1 {
+			return nil
+		}
+		if block.Text == "" {
+			return []string{""}
+		}
+		return strings.Split(ansi.Wordwrap(block.Text, width, ""), "\n")
 	default:
 		return []string{theme.DangerStyle.Render("! unsupported transcript block")}
 	}
