@@ -97,8 +97,15 @@ present.
 ### Requirement: Remember a decision within the session
 
 When a decision is answered with remember set, the permission stage SHALL turn it
-into a durable rule that takes effect immediately, so the next matching action in
-the same session is resolved by the rule without prompting again.
+into a remembered rule that takes effect immediately, so the next matching action
+in the same session is resolved by the rule without prompting again. When a safe
+human-readable family scope exists, the existing family rule SHALL remain
+compatible. Otherwise the standard permission engine SHALL offer a versioned,
+domain-separated HMAC-SHA-256 exact-call rule whose identity includes the typed
+action kind, tool name, and canonical effective arguments. An exact-call rule
+MUST NOT persist raw arguments, command text, file content, task instructions,
+credentials, sandbox grants, or its fingerprint key. Deny rules SHALL continue
+to win over allow rules for both selectors.
 
 #### Scenario: Remembered approval silences the next matching action
 
@@ -106,16 +113,58 @@ the same session is resolved by the rule without prompting again.
 - **AND** the same kind of action recurs later in the same session
 - **THEN** it runs without prompting
 
+#### Scenario: Unsafe family generalization uses exact-call fallback
+
+- **WHEN** a standard rich permission request has no safe family scope
+- **THEN** allow-and-remember and deny-and-remember remain available for that request
+- **THEN** the displayed scope identifies an exact call without exposing its digest or raw arguments
+
+#### Scenario: Exact-call identity is narrow
+
+- **WHEN** an exact-call rule was remembered for one effective call
+- **AND** the engine has the same fingerprint key
+- **THEN** the same action kind, tool name, and canonical effective arguments match it
+- **THEN** a different tool name or different effective arguments do not match it
+
+#### Scenario: Exact-call persistence is secret-free
+
+- **WHEN** a command, task, or custom call containing secret text is remembered exactly
+- **THEN** settings contain only the versioned action kind and keyed fingerprint
+- **THEN** raw arguments and one-call sandbox grants are not persisted
+- **THEN** the settings rule alone cannot verify offline guesses of the original arguments
+
+#### Scenario: Session-only exact remember needs no caller setup
+
+- **WHEN** a direct SDK session has no injected fingerprint key and durable permission persistence is disabled
+- **THEN** the engine generates a session-ephemeral fingerprint key
+- **THEN** allow-and-remember and deny-and-remember remain available and take effect immediately
+- **THEN** an exact rule derived from that ephemeral key is not persisted
+
+#### Scenario: Unsafe legacy exact digest fails safe
+
+- **WHEN** settings contain a legacy `exact-v1` unkeyed SHA-256 rule
+- **THEN** startup removes every such allow and deny entry from raw home and project settings before environment placeholders are resolved
+- **THEN** the rewrite preserves unrelated raw fields and file permissions, creates no backup containing the old digest, and emits only a path/count/version warning that recommends credential rotation
+- **THEN** a direct in-memory legacy rule is still skipped and never automatically allows or denies a call
+
+#### Scenario: Saving cannot resurrect a legacy exact digest
+
+- **WHEN** a remembered rule is appended to a settings file that still contains `exact-v1` entries
+- **THEN** the save transaction scrubs all legacy allow and deny entries before appending the new rule
+- **THEN** an attempt to append another `exact-v1` rule is refused after the on-disk scrub
+
 ### Requirement: Remembered choices persist across sessions
 
 A remembered decision SHALL be saved to settings so it is honored after a restart
-and settings reload. Saving SHALL preserve unrelated settings. If saving fails,
-the accompanying action SHALL still run — only durability is lost.
+and settings reload. Reloadable exact-call rules SHALL use the same persistent
+fingerprint key across sessions. Saving SHALL preserve unrelated settings. If
+saving fails, the accompanying action SHALL still run; only durability is lost.
 
 #### Scenario: Remembered choice still in effect after restart
 
 - **WHEN** a choice was remembered in a prior session
 - **AND** settings are reloaded in a new session
+- **AND** an exact-call choice uses the same independently persisted fingerprint key
 - **THEN** the choice is still in effect
 
 #### Scenario: Saving preserves unrelated settings
@@ -204,36 +253,35 @@ prompt and SHALL NOT consult rules. Bypass SHALL NOT affect the hard guardrails
 - **AND** bypass mode is active
 - **THEN** the action is still stopped by that guardrail
 
-### Requirement: Modes switch between turns and start from configuration
+### Requirement: Modes switch live and start from configuration
 When the standard permission engine owns control, the permission stage SHALL
 begin in the typed mode named by configuration and SHALL expose that ownership
 and typed current mode through the public session descriptor. A public typed
 mode-change operation SHALL accept only default,
-auto-accept-edits, plan, or bypass and SHALL apply a change only while no turn is
-in flight, so the new mode governs the complete next turn. A mid-turn change
-MUST return a stable typed error and leave the current mode unchanged. The
-existing string mode setter SHALL remain as a compatibility wrapper over these
-rules. Its documented between-turn behavior and signature MUST remain compatible;
-a mid-run call that previously had no documented guarantee SHALL now return the
-same stable in-flight error as the typed operation and leave mode unchanged.
+auto-accept-edits, plan, or bypass and SHALL support a mutex-linearized change
+during an active run. Every permission decision that begins after the setter
+returns SHALL observe the new mode. A request that already snapshotted its mode
+and opened a reply path MUST remain pending and MUST NOT be retroactively allowed,
+denied, or revised by the mode change. Already executing tools are unaffected.
+The existing string mode setter SHALL remain as a compatibility wrapper with the
+same live semantics. Hooks and sandbox behavior MUST remain unchanged.
 
 #### Scenario: Configured starting mode governs the first turn
 - **WHEN** a valid starting mode is set in configuration
 - **THEN** that typed mode appears in the initial descriptor and governs actions from the first turn
 
-#### Scenario: Switching mode before the next turn takes effect
-- **WHEN** a different valid mode is selected while the session is idle
-- **THEN** the change succeeds, a fresh descriptor reports it, and the new mode governs every action in the subsequent turn
+#### Scenario: Switching mode before the next decision takes effect
+- **WHEN** a different valid mode is selected while the session is idle or running
+- **THEN** the change succeeds, a fresh descriptor reports it, and the new mode governs permission decisions begun after the setter returns
 
-#### Scenario: Mid-turn switch is rejected atomically
-- **WHEN** a caller tries to change mode while a turn or permission interaction is in flight
-- **THEN** the operation returns the stable in-flight mode-change error
-- **THEN** the governing mode and descriptor state remain unchanged for that turn
+#### Scenario: Open prompt is not retroactively resolved
+- **WHEN** a permission request is already open and a caller changes mode
+- **THEN** the open request retains its snapshotted mode and still requires one explicit reply
+- **THEN** a later decision begun after the setter returns observes the new mode
 
-#### Scenario: Existing string setter rejects out-of-contract mid-run use
+#### Scenario: Existing string setter supports live changes
 - **WHEN** an existing caller invokes the string mode setter during a run
-- **THEN** the method signature remains unchanged but returns the stable in-flight error
-- **THEN** valid between-turn string calls retain their prior behavior
+- **THEN** the method signature remains unchanged and the live change uses the same linearization semantics as the typed setter
 
 #### Scenario: Unknown typed mode is rejected
 - **WHEN** a caller supplies a mode value outside the four defined modes
@@ -424,14 +472,14 @@ rule.
 
 ### Requirement: Interactive bypass confirmation belongs to the frontend
 The typed SDK mode API SHALL remain UI-agnostic and SHALL allow a programmatic
-caller to select bypass directly between turns. An interactive TUI MUST require
+caller to select bypass directly while idle or running. An interactive TUI MUST require
 an explicit confirmation before sending a user-initiated transition to bypass,
 and cancellation of that confirmation MUST leave the prior mode unchanged. This
 frontend guard SHALL be presented as an informed-use safeguard, not as a hard
 security boundary; hooks and sandbox remain the unconditional guardrails.
 
 #### Scenario: TUI user confirms bypass
-- **WHEN** an idle TUI user selects bypass and confirms the warning
+- **WHEN** an idle or running TUI user selects bypass and confirms the warning
 - **THEN** the frontend sends the typed mode change and displays bypass only after the SDK accepts it
 
 #### Scenario: TUI user cancels bypass
@@ -439,6 +487,6 @@ security boundary; hooks and sandbox remain the unconditional guardrails.
 - **THEN** the frontend sends no bypass mode change and the existing mode remains visible and active
 
 #### Scenario: SDK caller selects bypass without terminal UI
-- **WHEN** a programmatic SDK caller selects bypass between turns
+- **WHEN** a programmatic SDK caller selects bypass while idle or during a run
 - **THEN** no terminal-specific confirmation is imposed by the permission engine
 - **THEN** hard hooks and sandbox behavior remain unchanged

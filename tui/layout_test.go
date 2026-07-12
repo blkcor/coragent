@@ -46,6 +46,9 @@ func TestLayoutForSizeAppliesPriorityGeometry(t *testing.T) {
 	if compact.HorizontalPadding != 2 || !compact.ShowModel || compact.ShowFullPath {
 		t.Fatalf("compact layout = %#v", compact)
 	}
+	if compact.ComposerMaxRows != 4 {
+		t.Fatalf("compact composer max rows = %d, want 4", compact.ComposerMaxRows)
+	}
 
 	minimal := LayoutForSize(60, 20)
 	if minimal.HorizontalPadding != 1 || minimal.ShowModel || !minimal.MinimalBorders {
@@ -58,6 +61,18 @@ func TestLayoutForSizeAppliesPriorityGeometry(t *testing.T) {
 	tiny := LayoutForSize(59, 19)
 	if tiny.Class != LayoutTooSmall || tiny.ContentWidth != 59 || tiny.TranscriptRows != 19 {
 		t.Fatalf("too-small layout = %#v", tiny)
+	}
+}
+
+func TestRunLedgerGeometryDoesNotReserveHintRow(t *testing.T) {
+	t.Parallel()
+
+	for _, size := range [][2]int{{60, 20}, {80, 24}, {120, 36}, {160, 48}} {
+		layout := LayoutForSize(size[0], size[1])
+		fixed := 2 + layout.ComposerMinRows
+		if got, want := layout.TranscriptRows, layout.Height-fixed; got != want {
+			t.Fatalf("%dx%d transcript rows = %d, want %d after removing hint row", size[0], size[1], got, want)
+		}
 	}
 }
 

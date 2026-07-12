@@ -5,11 +5,15 @@ TBD - created by archiving change phase-7-tui. Update Purpose after archive.
 ## Requirements
 ### Requirement: Side-effect-free action preparation
 The harness SHALL support a frontend-neutral preparation step for an action whose
-handler can preview its effects. Preparation MUST receive validated effective
-arguments, MAY read the minimum current state needed to describe the action, and
-MUST NOT create, modify, delete, rename, chmod, or otherwise mutate a target. A
-preparation failure SHALL stop the call before permission can approve a
-misdescribed action or execution can mutate state.
+handler can preview its effects. The additive `PreparedActionHandler` contract
+SHALL remain the identity-bound prepare/commit seam for mutations. A separate
+additive `ActionPreviewer` contract SHALL describe actions that do not require a
+commit token. Both seams MUST receive validated effective arguments and be
+cancellable and side-effect-free during preview. A previewer MUST NOT execute the
+tool, launch a command, walk or read a target merely to produce declarative
+metadata, or start a delegated child. A preparation or preview failure SHALL stop
+the call before permission can approve a misdescribed action or execution can
+mutate state.
 
 #### Scenario: Preparing a file action leaves the filesystem unchanged
 - **WHEN** a preview-capable file action is prepared
@@ -25,6 +29,12 @@ misdescribed action or execution can mutate state.
 - **WHEN** the governing context is cancelled while an action is being prepared
 - **THEN** preparation stops promptly and no prepared action is committed
 
+#### Scenario: Preview-only seam does not become a commit path
+
+- **WHEN** a handler implements `ActionPreviewer` without `PreparedActionHandler`
+- **THEN** the executor obtains its preview before permission and later invokes the ordinary execution path only after approval
+- **THEN** previewing alone does not execute the action
+
 ### Requirement: Effective arguments govern every prepared revision
 The first prepared revision SHALL use the validated arguments remaining after
 before-tool hooks. A rich permission argument revision MUST NOT approve the
@@ -36,6 +46,10 @@ SHALL it create a replacement revision and permission request. Only the latest a
 to execute, and an older revision or preview MUST NOT be reused after arguments
 change.
 
+The same revision rules SHALL apply to `ActionPreviewer`: a hook edit or accepted
+permission argument revision MUST recompute the preview from the new effective
+arguments, increment the revision, and MUST NOT reuse an older preview.
+
 #### Scenario: Hook-edited arguments are previewed
 - **WHEN** a before-tool hook replaces valid action arguments
 - **THEN** the prepared action and preview describe the hook-edited arguments rather than the provider's original arguments
@@ -44,6 +58,11 @@ change.
 - **WHEN** the rich permission protocol accepts a schema-valid `revise_arguments` reply, hard hooks allow it, and preparation succeeds
 - **THEN** that reply does not approve execution
 - **THEN** the revised arguments are revalidated, hard-checked, and used to create a new prepared revision and permission request
+
+#### Scenario: Preview-only handler recomputes a revision
+
+- **WHEN** the effective arguments of an `ActionPreviewer` change after a hook or permission revision
+- **THEN** the harness invokes the previewer again and correlates the replacement preview to the incremented revision
 
 #### Scenario: Accepted revision is blocked before replacement preparation
 - **WHEN** a schema-valid revision resolves its request and a hard hook blocks, fails, or produces an invalid replacement
@@ -55,12 +74,20 @@ change.
 - **THEN** the harness ignores the stale approval and does not execute either revision from it
 
 ### Requirement: Structured previews describe the candidate effect
-Every prepared action SHALL carry a structured preview correlated to its tool
+Every preview-capable action SHALL carry a structured preview correlated to its tool
 call and revision. The preview MUST identify its action kind and affected targets,
 and SHALL describe the exact candidate effect using typed fields such as a file
 diff or command summary rather than requiring a frontend to parse prose. When a
-handler cannot provide a preview, the harness SHALL report typed unavailability
+handler implements neither preview seam, the harness SHALL report typed unavailability
 with a reason and MUST NOT invent one from a tool name or result string.
+
+The first-party `read_file`, `search_content`, `find_files`, `run_command`, and
+`task` handlers SHALL implement `ActionPreviewer`. Their previews SHALL resolve
+the same defaults execution uses and SHALL truthfully describe respectively the
+read window; search pattern, path, glob, and case mode; file glob, root, and
+skipped directories; full command and effective timeout; and task label, bounded
+instruction summary, and effective child tool set. `write_file` and `edit_file`
+SHALL retain their identity-bound prepared file previews.
 
 #### Scenario: Text file mutation provides a typed diff
 - **WHEN** a preview-capable text file mutation is prepared
@@ -68,26 +95,34 @@ with a reason and MUST NOT invent one from a tool name or result string.
 - **THEN** a frontend can render the diff without parsing a human-readable confirmation
 
 #### Scenario: Preview support is unavailable
-- **WHEN** an existing custom handler does not implement action preparation
+- **WHEN** an existing custom handler implements neither `PreparedActionHandler` nor `ActionPreviewer`
 - **THEN** the action retains its existing execution behavior
 - **THEN** the preview state is explicitly unavailable rather than fabricated
+
+#### Scenario: First-party tools provide authoritative previews
+
+- **WHEN** read, search, find, command, or task reaches the preview step
+- **THEN** its structured preview contains the effective operation details and is not typed unavailable
+- **THEN** generating that preview performs no read, search, walk, command launch, or child startup
 
 #### Scenario: Preview identity follows one call revision
 - **WHEN** a prepared preview is delivered through an observed event or rich permission request
 - **THEN** it carries the same tool-call correlation ID and revision as the effective action it describes
 
 ### Requirement: Preview payloads are bounded without hiding loss
-The harness SHALL bound preview payloads independently of tool-result output. If
-a complete preview exceeds that bound, it MUST preserve truthful operation and
-aggregate metadata, retain only content that fits on valid text boundaries, and
-attach a structured `preview_budget` omission containing the known
-original and retained sizes and non-recoverable status. Frontend folding of a
-fully retained preview SHALL remain a reversible presentation choice and MUST NOT
-be reported as harness truncation. The schema-v1 textual preview body SHALL use
-a fixed maximum of 64 KiB of valid UTF-8 or 800 logical preview lines, whichever
-is reached first. Frontend terminal wrapping MUST NOT change that harness bound,
-and aggregate operation metadata SHALL remain available outside the bounded
-textual body.
+The harness SHALL bound preview payloads independently of tool-result output. It
+MUST project from an empty result into bounded storage and MUST NOT clone an
+unbounded handler preview before applying the bound. One shared maximum of 64 KiB
+of valid UTF-8 or 800 logical preview lines, whichever is reached first, SHALL
+cover summary, targets, unavailable reason, metadata keys and values, text,
+file-diff path, hunks and lines, omission identifiers, and every projected
+collection entry. If a complete preview exceeds that bound, projection MUST
+preserve typed scalar aggregates such as operation and file-diff counts, retain
+only content that fits on valid text boundaries, and attach a structured
+`preview_budget` omission containing known original and retained sizes and
+non-recoverable status. Frontend folding of a fully retained preview SHALL remain
+a reversible presentation choice and MUST NOT be reported as harness truncation.
+Frontend terminal wrapping MUST NOT change the harness bound.
 
 #### Scenario: Complete preview fits the bound
 - **WHEN** a prepared diff fits within the preview bound
@@ -97,6 +132,16 @@ textual body.
 - **WHEN** a prepared diff exceeds the preview bound
 - **THEN** the retained preview stays within the bound and remains valid text
 - **THEN** aggregate change counts remain truthful and a structured `preview_budget` omission states that omitted preview content cannot be recovered from the stream
+
+#### Scenario: Oversized collections cannot bypass the budget
+- **WHEN** an action preview contains oversized targets, metadata, hunks, or diff lines
+- **THEN** every retained string and collection entry participates in the same byte and logical-line budget
+- **THEN** the projected collection capacities remain bounded and typed aggregate counts remain available
+
+#### Scenario: Both preview contracts bound before cloning
+- **WHEN** either an `ActionPreviewer` or `PreparedActionHandler` returns an oversized preview
+- **THEN** the executor applies bounded projection before making any independent preview clone
+- **THEN** a prepared handler's opaque commit token and candidate identity remain unchanged
 
 #### Scenario: Terminal width does not change the preview budget
 - **WHEN** the same prepared preview is observed by frontends with different wrap widths

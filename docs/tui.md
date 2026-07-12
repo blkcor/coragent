@@ -42,8 +42,8 @@ inspector/help, composer, then global actions.
 | Inspector | `Up/Down`, `PageUp/PageDown` | Navigate inspector rows |
 | Inspector | `Enter` | Expand retained reasoning, preview, arguments, or result content |
 | Overlay/editor | `Esc` | Return to its parent screen |
-| Idle | `Shift+Tab` | Cycle `DEFAULT → AUTO EDIT → PLAN → DEFAULT` |
-| Idle | `Ctrl+B` | Open the explicit BYPASS confirmation |
+| Idle or active run | `Shift+Tab` | Cycle `DEFAULT → AUTO EDIT → PLAN → DEFAULT` for later permission decisions |
+| Idle or active run | `Ctrl+B` | Open the explicit BYPASS confirmation |
 | Active run | `Esc`, `Ctrl+C` | Request cancellation once |
 | Idle | `Ctrl+C` twice within 1.5 s | Clean shutdown |
 | Any state | `Ctrl+Q` | Bounded clean shutdown |
@@ -67,11 +67,24 @@ offers:
 | `e` | Edit JSON arguments; `Ctrl+S` submits a revision, not an approval |
 | `s` | Edit additive read/write/network grants for this call only |
 
+`Up/Down` or `j/k` moves the decision focus, and `Enter` or `Space` activates
+the selected enabled action. `PageUp/PageDown`, `Ctrl+U/D`, `Home/End`, and the
+mouse wheel scroll only the review body. Page movement overlaps by one line, so
+long action, reason, scope, and preview text cannot be skipped. Below `60x20`,
+the stable action list contains only deny.
+
 Invalid JSON or public schema feedback leaves the editor open and retains the
 draft. A valid revision resolves the old request, re-enters hard hooks and
 preparation, and displays a new request ID and preview revision before any final
 allow decision. Remembering an action never persists its one-call sandbox
-grants.
+grants. Exact-call remember uses a keyed fingerprint; standard startup keeps the
+key in the independent `~/.coragent/permission-fingerprint.key` regular file with
+mode `0600`, never in project settings or UI descriptions. Startup atomically
+scrubs unsafe legacy `exact-v1` plain-digest rules from home and project settings
+and warns that credentials remembered by those rules may need rotation. A
+missing or unsafe fingerprint key also clears persisted exact selectors before a
+fresh or rotated key is published. Unsafe key parents fail startup with an
+actionable ownership, permission, or ACL error.
 
 Below `60x20`, permission review remains deny/cancel/quit capable but disables
 allow, remember, argument editing, and grant editing until the terminal is
@@ -88,8 +101,10 @@ resized.
 
 `Shift+Tab` never enters bypass. `Ctrl+B` opens a blocking explanation and only
 an explicit `y`/`Enter` confirmation requests the public typed bypass mode.
-Mode changes are accepted only between runs and chrome updates only after the
-SDK setter succeeds.
+Mode changes are accepted while idle or during a run, and chrome updates only
+after the SDK setter succeeds. Decisions begun after that success use the new
+mode. A permission prompt that was already open remains pending and must still be
+answered explicitly; confirming bypass never silently approves it.
 
 ## Transcript, history, and copy
 

@@ -56,6 +56,17 @@ type PreparedActionHandler interface {
 	ExecutePrepared(ctx context.Context, prepared PreparedAction) (string, error)
 }
 
+// ActionPreviewer is an optional additive contract for tools whose execution
+// does not need an identity-bound prepared candidate. PreviewAction must be
+// cancellable and side-effect-free: it may validate and describe the effective
+// arguments, but it must not perform the action, launch commands, or create
+// child runtimes. Mutating tools that need prepare/commit integrity should use
+// PreparedActionHandler instead.
+type ActionPreviewer interface {
+	ToolHandler
+	PreviewAction(ctx context.Context, args map[string]interface{}) (ActionPreview, error)
+}
+
 func clonePreparedArguments(arguments map[string]interface{}) map[string]interface{} {
 	if arguments == nil {
 		return nil

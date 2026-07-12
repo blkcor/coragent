@@ -55,7 +55,7 @@ func ResolveVisualMode(options VisualOptions) VisualMode {
 	}
 }
 
-// TrueColorMode returns the default Terminal Narrative visual mode.
+// TrueColorMode returns the default Run Ledger visual mode.
 func TrueColorMode() VisualMode {
 	return VisualMode{Color: ColorTrueColor}
 }
@@ -70,7 +70,7 @@ func ASCIIMode() VisualMode {
 	return VisualMode{Color: ColorNoColor, ASCII: true, ReducedMotion: true}
 }
 
-// Palette records the versioned Terminal Narrative semantic color roles.
+// Palette records the versioned Run Ledger semantic color roles.
 // Hex values remain available to renderers and golden tests even in no-color
 // mode, while Theme styles decide whether to emit them.
 type Palette struct {
@@ -93,19 +93,19 @@ type Palette struct {
 // remains stable while the layout direction evolves independently of colors.
 func QuietPalette() Palette {
 	return Palette{
-		Canvas:               "#0C0D0C",
-		Surface:              "#131512",
-		Elevated:             "#1A1D19",
-		Border:               "#30352E",
-		Text:                 "#E7E9E3",
-		Muted:                "#90988B",
-		Accent:               "#D97757",
-		Success:              "#7EBC77",
-		Warning:              "#D6A95F",
-		Danger:               "#E17A72",
-		Info:                 "#8FA9A1",
-		DiffAddBackground:    "#16301F",
-		DiffRemoveBackground: "#351C1C",
+		Canvas:               "#090C0A",
+		Surface:              "#121711",
+		Elevated:             "#192018",
+		Border:               "#2C352A",
+		Text:                 "#E8EBDD",
+		Muted:                "#8C9484",
+		Accent:               "#C8D45A",
+		Success:              "#82B67E",
+		Warning:              "#D6AA58",
+		Danger:               "#E0766E",
+		Info:                 "#91AAA0",
+		DiffAddBackground:    "#16291B",
+		DiffRemoveBackground: "#301A19",
 	}
 }
 
@@ -201,7 +201,7 @@ func ThemeForMode(mode VisualMode) Theme {
 	borderColor := semanticColor(mode.Color, palette.Border, 237)
 	textColor := semanticColor(mode.Color, palette.Text, 254)
 	muted := semanticColor(mode.Color, palette.Muted, 102)
-	accent := semanticColor(mode.Color, palette.Accent, 173)
+	accent := semanticColor(mode.Color, palette.Accent, 185)
 	success := semanticColor(mode.Color, palette.Success, 114)
 	warning := semanticColor(mode.Color, palette.Warning, 179)
 	danger := semanticColor(mode.Color, palette.Danger, 174)
@@ -236,13 +236,13 @@ func semanticColor(mode ColorMode, hex string, ansi256 uint8) color.Color {
 
 func unicodeGlyphs() GlyphSet {
 	return GlyphSet{
-		Proposed:     "○",
+		Proposed:     "·",
 		ActiveFrames: [4]string{"◐", "◓", "◑", "◒"},
-		Permission:   "◆",
-		Success:      "●",
-		Warning:      "▲",
+		Permission:   "◇",
+		Success:      "✓",
+		Warning:      "!",
 		Error:        "×",
-		Cancelled:    "∅",
+		Cancelled:    "−",
 		HookBlocked:  "■",
 		Cursor:       "▍",
 		Ellipsis:     "…",

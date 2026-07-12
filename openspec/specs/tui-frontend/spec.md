@@ -352,8 +352,10 @@ only when the public event supplies them or the UI folded the content itself.
 Every public permission request SHALL open one focus-capturing modal associated
 with its tool card. The modal SHALL show the action, reason, effective arguments
 or preview, origin, remembered-rule scope when available, and any proposed
-one-call sandbox grants. Background composer, scrolling, mode, help, and
+one-call sandbox grants. Background composer, transcript scrolling, help, and
 inspector commands MUST be inert until the modal or its child editor is resolved.
+Live `Shift+Tab` and confirmed `Ctrl+B` mode changes MAY remain reachable, but
+MUST NOT resolve, approve, or dismiss the already-open request.
 
 #### Scenario: Root action requests permission
 - **WHEN** a root tool emits a permission request
@@ -370,10 +372,10 @@ inspector commands MUST be inert until the modal or its child editor is resolved
 - **THEN** the modal shows external ownership and the available allow/deny plus applicable remember actions
 - **THEN** argument revision, schema-aware editing, preview, and grant controls are hidden or disabled according to the request instead of being fabricated
 
-#### Scenario: Remembered rule is unavailable
-- **WHEN** a permission request has no safely generalizable remembered rule and the terminal is at a supported size
-- **THEN** remember choices are visibly disabled
-- **THEN** the UI still offers allow-once, deny-once, argument editing when supported, and grant editing when supported
+#### Scenario: Exact remembered scope is safe
+- **WHEN** the standard permission engine supplies an exact-call remembered scope
+- **THEN** allow-and-remember and deny-and-remember are selectable
+- **THEN** the modal shows the safe display label and does not show the hash or raw secret-bearing arguments as the remembered scope
 
 #### Scenario: Non-modal input arrives during a prompt
 - **WHEN** a permission modal is open and the user presses a composer, scroll, mode, help, or inspector key
@@ -383,6 +385,12 @@ inspector commands MUST be inert until the modal or its child editor is resolved
 The permission modal SHALL provide `a` for allow once, `d` for deny once, `A`
 for allow and remember, `D` for deny and remember, `e` for argument editing, and
 `s` for one-call sandbox grant editing when those operations are supported.
+It SHALL build one stable list containing only enabled actions. `Up/Down` and
+`j/k` SHALL move the visible selection, while `Enter` or `Space` SHALL submit or
+open the selected action exactly once. `PageUp/PageDown`, `Ctrl+U/D`, `Home/End`,
+and the mouse wheel SHALL scroll only the review body, with page movement
+retaining at least one line of overlap so no action, reason, or preview line is
+skipped. Arrow selection MUST NOT scroll the review body.
 Argument and grant editors SHALL validate before returning to the decision modal;
 neither editing operation alone SHALL approve execution. Remembered action rules
 MUST NOT silently persist per-call sandbox grants. Every rich decision SHALL
@@ -396,6 +404,16 @@ same request, clear the submission guard, preserve drafts, and display feedback;
 - **WHEN** the user presses `a` on the decision modal
 - **THEN** exactly one allow decision with `remember=false` is submitted and the modal remains visibly pending
 - **THEN** the modal closes and execution may continue only after the public reply outcome is `accepted`
+
+#### Scenario: Arrow selection activates with Enter
+- **WHEN** the user moves from allow once to allow-and-remember with `Down` and presses `Enter`
+- **THEN** the focus marker follows allow-and-remember and exactly one remembered allow reply is submitted
+- **THEN** the review scroll position remains unchanged by the arrow key
+
+#### Scenario: Review paging does not skip content
+- **WHEN** a long permission review is paged repeatedly with `PageDown`
+- **THEN** consecutive pages overlap and every retained ACTION, WHY, SCOPE, and PREVIEW line remains reachable
+- **THEN** the selected decision remains unchanged
 
 #### Scenario: Deny once sends a one-call decision
 - **WHEN** the user presses `d` or dismisses the decision modal with `Esc`
@@ -505,9 +523,9 @@ intentional pointer exception and SHALL be described as mouse-wheel-only.
 - **THEN** the active composer or overlay may apply its own normal editing meaning without changing the transcript semantic anchor
 
 #### Scenario: Modal priority wins
-- **WHEN** a permission modal is active and the user presses `Enter`, `Shift+Tab`, `Ctrl+/`, `Ctrl+I`, `PageUp`, or `PageDown`
-- **THEN** the background action is not invoked
-- **THEN** only a command explicitly displayed by the modal may take effect
+- **WHEN** a permission modal is active and the user presses `Enter`, `Ctrl+/`, `Ctrl+I`, `PageUp`, or `PageDown`
+- **THEN** the background composer and transcript action are not invoked
+- **THEN** only the selected decision, review viewport, or another command explicitly displayed by the modal may take effect
 
 #### Scenario: Modal priority also captures the mouse wheel
 - **WHEN** a permission modal or child editor is active and the user turns the mouse wheel
@@ -519,12 +537,12 @@ The frontend SHALL always show the effective permission-control state in a fixed
 chrome area. When the session owns the default permission engine, that state is
 one of `default`, `auto-accept edits`, `plan`, or `bypass`. When permission is
 caller-owned or unavailable, the area SHALL instead show `external` or
-`unsupported` with safe ownership detail in the inspector. While idle with no
-modal active, `Shift+Tab` SHALL cycle only
+`unsupported` with safe ownership detail in the inspector. While idle or running,
+`Shift+Tab` SHALL cycle only
 `default`, `auto-accept edits`, and `plan`; bypass MUST require `Ctrl+B` followed
 by explicit confirmation and MUST NOT be part of the casual cycle. Mode changes
-during a run SHALL be rejected with a notice, and chrome SHALL update only after
-the public typed setter succeeds.
+during a run SHALL use the public live setter, and chrome SHALL update only after
+that setter succeeds. An open permission request SHALL remain explicitly pending.
 
 #### Scenario: Mode cycles between safe modes
 - **WHEN** the effective mode is `default`, `auto-accept edits`, or `plan` and the user presses `Shift+Tab`
@@ -532,9 +550,10 @@ the public typed setter succeeds.
 - **THEN** chrome changes only if the public SDK accepts it
 
 #### Scenario: Bypass requires confirmation
-- **WHEN** the user presses `Ctrl+B` from a safe mode while idle
+- **WHEN** the user presses `Ctrl+B` from a safe mode while idle, running, or waiting on a permission request
 - **THEN** a blocking confirmation explains that permission prompts may be skipped while hard hooks and sandbox confinement still apply
 - **THEN** bypass becomes effective only after the user explicitly confirms
+- **THEN** an already-open permission request remains open and is not silently approved
 
 #### Scenario: Bypass confirmation is dismissed
 - **WHEN** the user presses `Esc` or selects no in the bypass confirmation
@@ -544,10 +563,10 @@ the public typed setter succeeds.
 - **WHEN** bypass is already effective and the user presses `Shift+Tab` outside a modal
 - **THEN** the next selected mode is `default`
 
-#### Scenario: Mode change is attempted during a run
+#### Scenario: Mode changes during a run
 - **WHEN** a run is active and the user presses `Shift+Tab` or `Ctrl+B`
-- **THEN** the current effective mode remains unchanged
-- **THEN** a short notice says that mode can change only between runs
+- **THEN** the frontend requests the selected mode and leaves current execution unchanged
+- **THEN** chrome changes only after the setter succeeds and later permission decisions use the new mode
 
 #### Scenario: Public SDK rejects a mode change
 - **WHEN** the session cannot apply the requested mode, including a custom dispatcher that owns permission

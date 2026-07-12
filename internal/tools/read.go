@@ -37,6 +37,37 @@ func (ReadFile) RunsCommands() bool { return false }
 
 func (ReadFile) ActionKind() core.ActionKind { return core.ActionRead }
 
+// PreviewAction describes the requested read window without opening or stating
+// the target. Actual filesystem validation remains in Execute.
+func (ReadFile) PreviewAction(_ context.Context, args map[string]interface{}) (core.ActionPreview, error) {
+	path, ok := stringArg(args, "path")
+	if !ok || path == "" {
+		return core.ActionPreview{}, fmt.Errorf("read_file: path is required")
+	}
+	offset := 1
+	if value, exists := intArg(args, "offset"); exists {
+		if value < 1 {
+			return core.ActionPreview{}, fmt.Errorf("read_file: offset must be 1 or greater, got %d", value)
+		}
+		offset = value
+	}
+	limit := "all remaining lines"
+	if value, exists := intArg(args, "limit"); exists && value >= 0 {
+		limit = fmt.Sprintf("%d lines", value)
+	}
+	return core.ActionPreview{
+		Kind:      core.ActionPreviewMetadata,
+		Operation: core.ActionOperationCustom,
+		Summary:   "Read " + path,
+		Targets:   []string{path},
+		Metadata: map[string]string{
+			"path":   path,
+			"offset": fmt.Sprintf("line %d", offset),
+			"limit":  limit,
+		},
+	}, nil
+}
+
 func (ReadFile) Execute(_ context.Context, args map[string]interface{}) (string, error) {
 	path, ok := stringArg(args, "path")
 	if !ok || path == "" {
@@ -100,3 +131,5 @@ func isBinary(data []byte) bool {
 	}
 	return bytes.IndexByte(data, 0) >= 0
 }
+
+var _ core.ActionPreviewer = ReadFile{}

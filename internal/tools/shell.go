@@ -43,6 +43,26 @@ func (ShellCommand) RunsCommands() bool { return true }
 
 func (ShellCommand) ActionKind() core.ActionKind { return core.ActionCommand }
 
+// PreviewAction resolves the same timeout ExecuteCommand will use while never
+// constructing or launching a process.
+func (ShellCommand) PreviewAction(_ context.Context, args map[string]interface{}) (core.ActionPreview, error) {
+	command, ok := stringArg(args, "command")
+	if !ok || command == "" {
+		return core.ActionPreview{}, fmt.Errorf("run_command: command is required")
+	}
+	timeout := defaultShellTimeout
+	if ms, exists := intArg(args, "timeout_ms"); exists && ms > 0 {
+		timeout = time.Duration(ms) * time.Millisecond
+	}
+	return core.ActionPreview{
+		Kind:      core.ActionPreviewText,
+		Operation: core.ActionOperationCommand,
+		Summary:   "Run a shell command",
+		Text:      fmt.Sprintf("%s\ntimeout: %s", command, timeout),
+		Metadata:  map[string]string{"timeout": timeout.String()},
+	}, nil
+}
+
 func (ShellCommand) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	return (ShellCommand{}).ExecuteCommand(ctx, args, directCommandRunner{})
 }
@@ -118,6 +138,7 @@ func (directCommandRunner) Run(ctx context.Context, spec core.CommandSpec) (stri
 }
 
 var _ core.CommandToolHandler = ShellCommand{}
+var _ core.ActionPreviewer = ShellCommand{}
 
 // compose joins captured output with a trailing status note, keeping the note
 // present even when the command produced no output.

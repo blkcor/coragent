@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/blkcor/coragent/internal/config"
+	"github.com/blkcor/coragent/internal/core"
 	"github.com/blkcor/coragent/internal/permission"
 )
 
@@ -28,11 +29,17 @@ type BootstrapOptions struct {
 	// WorkingDirectory is the project root used by the standard sandbox. Empty
 	// uses the current process working directory.
 	WorkingDirectory string
+
+	// PermissionFingerprintKey optionally injects stable secret material for
+	// embedders and tests. The zero value makes the standard bootstrap securely
+	// load or create ~/.coragent/permission-fingerprint.key through no-follow
+	// descriptor, ownership, mode, link-count, and ACL validation.
+	PermissionFingerprintKey PermissionFingerprintKey
 }
 
-// LoadSettings discovers the canonical home and project settings, merges them
-// home-first, applies defaults, resolves environment references, and validates
-// the result for first-party bootstrap.
+// LoadSettings first scrubs unsafe legacy exact-call selectors from raw home and
+// project files, then discovers and merges settings home-first, applies defaults,
+// resolves environment references, and validates the first-party bootstrap input.
 func LoadSettings() (Settings, error) {
 	loaded, err := config.Load()
 	if err != nil {
@@ -57,20 +64,22 @@ func Bootstrap(settings Settings, opts BootstrapOptions) (*Session, error) {
 	}
 
 	model := resolved.Model
-	provider := NewOpenAIProvider(model.BaseURL, model.APIKey, model.Name)
+	baseName := core.ModelBaseName(model.Name)
+	provider := NewOpenAIProvider(model.BaseURL, model.APIKey, baseName)
 	cfg := SessionConfig{
-		Provider:               provider,
-		SystemPrompt:           bootstrapSystemPrompt,
-		StreamOptions:          StreamOptions{Model: model.Name, Temperature: cloneFloat(model.Temperature), MaxTokens: cloneInt(model.MaxTokens)},
-		ExternalHooks:          resolved.ExternalHooks(),
-		PermissionMode:         resolved.Permission.Mode,
-		PermissionAllow:        append([]string(nil), resolved.Permission.Allow...),
-		PermissionDeny:         append([]string(nil), resolved.Permission.Deny...),
-		PersistRememberedRules: true,
-		WorkingDirectory:       opts.WorkingDirectory,
-		SandboxExtraReadRoots:  append([]string(nil), sandboxReadRoots(resolved)...),
-		SandboxExtraWriteRoots: append([]string(nil), sandboxWriteRoots(resolved)...),
-		SandboxNetwork:         sandboxNetwork(resolved),
+		Provider:                 provider,
+		SystemPrompt:             bootstrapSystemPrompt,
+		StreamOptions:            StreamOptions{Model: baseName, Temperature: cloneFloat(model.Temperature), MaxTokens: cloneInt(model.MaxTokens)},
+		ExternalHooks:            resolved.ExternalHooks(),
+		PermissionMode:           resolved.Permission.Mode,
+		PermissionAllow:          append([]string(nil), resolved.Permission.Allow...),
+		PermissionDeny:           append([]string(nil), resolved.Permission.Deny...),
+		PermissionFingerprintKey: opts.PermissionFingerprintKey,
+		PersistRememberedRules:   true,
+		WorkingDirectory:         opts.WorkingDirectory,
+		SandboxExtraReadRoots:    append([]string(nil), sandboxReadRoots(resolved)...),
+		SandboxExtraWriteRoots:   append([]string(nil), sandboxWriteRoots(resolved)...),
+		SandboxNetwork:           sandboxNetwork(resolved),
 	}
 	return NewSessionWithError(cfg)
 }
@@ -174,7 +183,7 @@ func validateBootstrapSettings(s config.Settings) error {
 	for _, group := range ruleGroups {
 		for index, entry := range group.entries {
 			if _, err := permission.ParseRule(entry); err != nil {
-				return fmt.Errorf("permission.%s[%d] is invalid; expected <kind>:<match> with kind read, edit, or command", group.label, index)
+				return fmt.Errorf("permission.%s[%d] is invalid; expected <kind>:<match> or a supported versioned exact-call fingerprint", group.label, index)
 			}
 		}
 	}

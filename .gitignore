@@ -36,3 +36,4 @@ build/
 .gocache/
 
 .coragent/
+coragent

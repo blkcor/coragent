@@ -25,7 +25,16 @@
 // Permission requests carried by the observed stream bind their own
 // exactly-once reply operation. Rich replies support allow, deny, non-approving
 // argument revision, remembered action scope, and ephemeral one-call sandbox
-// grants. Permission mode can be changed through typed APIs only between runs.
+// grants. Permission mode can be changed through typed APIs while idle or during
+// a run; decisions begun after a successful setter observe the new mode, while an
+// already-open request still requires its explicit reply.
+// Reloadable exact-call remember uses a domain-separated keyed fingerprint. The
+// standard persistent session path keeps that key in an independent user-private
+// 0600 file validated through no-follow descriptors for ownership, mode, link,
+// and ACL safety. Unsafe legacy selectors are scrubbed from raw settings, and a
+// fresh or rotated key invalidates both disk and same-start in-memory exact
+// selectors. Direct embedders may inject the redacting PermissionFingerprintKey
+// value explicitly.
 //
 // This package is the only supported boundary for frontends and external SDK
 // clients. Its implementation may use module-internal packages, but callers do

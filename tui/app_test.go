@@ -70,7 +70,7 @@ func newReadyApp(t *testing.T, width, height int) (*AppModel, *fakeSessionPort) 
 			Mode:           ModeDefault,
 			ModeChangeable: true,
 			Sandbox:        "os",
-			Context:        "ctx unknown",
+			Context:        "ctx 0%",
 		},
 		stream: make(chan UIEvent, 32),
 	}
@@ -119,6 +119,10 @@ func commandIncludesRaw(command tea.Cmd, want string) bool {
 
 func press(code rune, modifiers tea.KeyMod) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: code, Mod: modifiers}
+}
+
+func shiftTab() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 }
 
 func typeKey(text string) tea.KeyPressMsg {
@@ -197,9 +201,14 @@ func TestAppEmptyResponsiveShells(t *testing.T) {
 			if len(lines) != test.height {
 				t.Fatalf("rendered rows = %d, want %d\n%s", len(lines), test.height, view)
 			}
-			for _, want := range []string{"coragent", "[DEFAULT]", "sandbox os", "Describe what you want changed", "Enter send"} {
+			for _, want := range []string{"coragent", "DEFAULT", "sandbox os", "Describe what you want changed"} {
 				if !strings.Contains(view, want) {
 					t.Errorf("empty view does not contain %q\n%s", want, view)
+				}
+			}
+			for _, noise := range []string{"Enter send", "Ctrl+J newline", "wheel history", "drag auto-copy"} {
+				if strings.Contains(view, noise) {
+					t.Errorf("empty view still contains redundant hint %q\n%s", noise, view)
 				}
 			}
 			placeholderRow := -1
@@ -221,14 +230,22 @@ func TestStatusNeverSacrificesModeOrSandboxToLongPath(t *testing.T) {
 	model.info.Project = "/workspace/a/very/long/project/path/that/cannot/fit/coragent"
 	model.mode = ModeAutoAcceptEdits
 	model.info.Sandbox = "os"
-	status := model.renderFooter(model.layout.ContentWidth)
-	for _, required := range []string{"[AUTO EDIT]", "sandbox os"} {
-		if !strings.Contains(status, required) {
-			t.Fatalf("status sacrificed %q to the path: %q", required, status)
-		}
+	header := model.renderHeader(model.layout.ContentWidth)
+	footer := model.renderFooter(model.layout.ContentWidth)
+	if !strings.Contains(header, "coragent") {
+		t.Fatalf("header missing hero: %q", header)
 	}
-	if got := ansi.StringWidth(status); got > model.layout.ContentWidth {
-		t.Fatalf("status width = %d, content width = %d", got, model.layout.ContentWidth)
+	if !strings.Contains(footer, "AUTO EDIT") {
+		t.Fatalf("footer sacrificed mode: %q", footer)
+	}
+	if !strings.Contains(footer, "sandbox os") {
+		t.Fatalf("footer sacrificed sandbox: %q", footer)
+	}
+	if got := ansi.StringWidth(header); got > model.layout.ContentWidth {
+		t.Fatalf("header width = %d, content width = %d", got, model.layout.ContentWidth)
+	}
+	if got := ansi.StringWidth(footer); got > model.layout.ContentWidth {
+		t.Fatalf("footer width = %d, content width = %d", got, model.layout.ContentWidth)
 	}
 }
 
@@ -255,8 +272,8 @@ func TestShortTranscriptStartsAtTopWithoutViewportPadding(t *testing.T) {
 	if strings.Count(prefix, "\n") > 2 {
 		t.Fatalf("short transcript still has a large leading void\n%s", view)
 	}
-	if strings.Contains(view, "YOU") || strings.Contains(view, "AGENT") {
-		t.Fatalf("chat-role labels leaked into the Claude-style narrative\n%s", view)
+	if !strings.Contains(view, "who are you") || strings.Contains(view, "YOU:") || strings.Contains(view, "AGENT:") {
+		t.Fatalf("run-ledger role treatment regressed\n%s", view)
 	}
 }
 
@@ -311,7 +328,7 @@ func TestAppStreamingToolPermissionAndTerminalOrdering(t *testing.T) {
 	if model.focus != FocusPermission || model.permission == nil {
 		t.Fatal("permission event did not capture focus")
 	}
-	if !strings.Contains(model.View().Content, "Permission required") {
+	if !strings.Contains(model.View().Content, "REVIEW") {
 		t.Fatal("permission sheet is not visible")
 	}
 
@@ -346,7 +363,7 @@ func TestAppStreamingToolPermissionAndTerminalOrdering(t *testing.T) {
 		t.Fatalf("tool state = %v, want done", model.transcript.Blocks[2].ToolState)
 	}
 	view := model.View().Content
-	for _, want := range []string{"Inspect the parser", "I will inspect it.", "read_file", "214 lines", "succeeded"} {
+	for _, want := range []string{"Inspect the parser", "I will inspect it.", "read_file", "succeeded"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("completed view does not contain %q\n%s", want, view)
 		}
@@ -416,10 +433,14 @@ func TestPermissionModalHasPriorityAndTooSmallFailsSafe(t *testing.T) {
 	}
 	model.applyEvent(UIEvent{Kind: EventPermissionRequested, Permission: &prompt})
 	model.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
-	model.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	_, modeCommand := model.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if modeCommand == nil {
+		t.Fatal("running permission did not allow a live mode change")
+	}
+	model.Update(modeCommand())
 	// Enter is a valid permission action; use Tab to verify no input leak.
 	model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if draft := model.composer.Value(); model.focus != FocusPermission || draft != "preserve me" || model.mode != ModeDefault {
+	if draft := model.composer.Value(); model.focus != FocusPermission || draft != "preserve me" || model.mode != ModeAutoAcceptEdits {
 		t.Fatalf("background input leaked through modal: focus=%v draft=%q mode=%q", model.focus, draft, model.mode)
 	}
 
@@ -434,9 +455,9 @@ func TestPermissionModalHasPriorityAndTooSmallFailsSafe(t *testing.T) {
 			t.Fatalf("too-small permission view lost %q\n%s", required, view)
 		}
 	}
-	_, deny := model.Update(typeKey("d"))
+	_, deny := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if deny == nil {
-		t.Fatal("too-small permission disabled deny")
+		t.Fatal("too-small permission Enter did not choose the only safe action")
 	}
 	model.Update(deny())
 	if len(decisions) != 1 || decisions[0] != DecisionDenyOnce {
@@ -465,7 +486,7 @@ func TestPermissionReviewViewportKeepsControlsFixedAndFullReviewReachable(t *tes
 	assertFixed := func(label string) string {
 		t.Helper()
 		view := model.View().Content
-		for _, required := range []string{"Permission required", "preview r1", "edit_file", "Allow once", "Deny", "scroll"} {
+		for _, required := range []string{"REVIEW", "preview r1", "edit_file", "Allow once", "Deny", "PgUp/PgDown scroll"} {
 			if !strings.Contains(view, required) {
 				t.Fatalf("%s view lost fixed review field %q\n%s", label, required, view)
 			}
@@ -477,7 +498,7 @@ func TestPermissionReviewViewportKeepsControlsFixedAndFullReviewReachable(t *tes
 	}
 
 	before := assertFixed("initial")
-	if !strings.Contains(before, "Action:") {
+	if !strings.Contains(before, "ACTION") {
 		t.Fatalf("initial review does not begin with the action\n%s", before)
 	}
 	model.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
@@ -489,12 +510,12 @@ func TestPermissionReviewViewportKeepsControlsFixedAndFullReviewReachable(t *tes
 	foundSuffix := false
 	foundReason := false
 	for range 100 {
-		model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		wheelTranscript(model, tea.MouseWheelDown)
 		view := assertFixed("review scan")
 		if strings.Contains(view, "DANGER") {
 			foundSuffix = true
 		}
-		if strings.Contains(view, "Why:") {
+		if strings.Contains(view, "WHY") {
 			foundReason = true
 		}
 		if foundSuffix && foundReason {
@@ -508,8 +529,94 @@ func TestPermissionReviewViewportKeepsControlsFixedAndFullReviewReachable(t *tes
 		t.Fatal("permission reason was not reachable in the review viewport")
 	}
 	model.Update(tea.KeyPressMsg{Code: tea.KeyHome})
-	if home := assertFixed("review start"); !strings.Contains(home, "Action:") {
+	if home := assertFixed("review start"); !strings.Contains(home, "ACTION") {
 		t.Fatalf("Home did not restore the start of review\n%s", home)
+	}
+}
+
+func TestPermissionArrowSelectionEnterAndReviewScrollingAreIndependent(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+	model.runState = RunRunning
+	var responses []PermissionResponse
+	prompt := PermissionPrompt{
+		RequestID: "request-selection", CallID: "call-selection", Tool: "search_content",
+		Action: "Search the repository", Reason: strings.Repeat("review context ", 30),
+		RememberScope: "exact search_content call",
+		Capabilities:  PermissionCapabilities{Allow: true, Deny: true, Remember: true},
+		RichReply: func(_ context.Context, response PermissionResponse) (PermissionReplyResult, error) {
+			responses = append(responses, response)
+			return PermissionReplyResult{Status: ReplyAccepted}, nil
+		},
+	}
+	model.applyEvent(UIEvent{Kind: EventPermissionRequested, Permission: &prompt})
+	if model.permission.Selected != permissionActionAllowOnce {
+		t.Fatalf("initial selection = %v", model.permission.Selected)
+	}
+	initialScroll := model.permission.Scroll
+	model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if model.permission.Selected != permissionActionAllowRemember || model.permission.Scroll != initialScroll {
+		t.Fatalf("Down selection=%v scroll=%d", model.permission.Selected, model.permission.Scroll)
+	}
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "› [A] Allow & remember") {
+		t.Fatalf("selected action is not visibly focused:\n%s", view)
+	}
+	model.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if model.permission.Scroll == initialScroll || model.permission.Selected != permissionActionAllowRemember {
+		t.Fatalf("PageDown selection=%v scroll=%d", model.permission.Selected, model.permission.Scroll)
+	}
+	selected := model.permission.Selected
+	wheelTranscript(model, tea.MouseWheelDown)
+	if model.permission.Selected != selected {
+		t.Fatalf("mouse wheel changed selection from %v to %v", selected, model.permission.Selected)
+	}
+	_, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("Enter did not activate selected permission action")
+	}
+	model.Update(command())
+	if len(responses) != 1 || responses[0].Decision != DecisionAllowRemember || !responses[0].Remember {
+		t.Fatalf("responses = %+v", responses)
+	}
+}
+
+func TestPermissionOpenBypassConfirmationChangesFutureModeOnly(t *testing.T) {
+	model, port := newReadyApp(t, 100, 30)
+	model.runState = RunRunning
+	var responses []PermissionResponse
+	prompt := PermissionPrompt{
+		RequestID: "request-bypass", CallID: "call-bypass", Tool: "run_command",
+		Capabilities: PermissionCapabilities{Allow: true, Deny: true},
+		RichReply: func(_ context.Context, response PermissionResponse) (PermissionReplyResult, error) {
+			responses = append(responses, response)
+			return PermissionReplyResult{Status: ReplyAccepted}, nil
+		},
+	}
+	model.applyEvent(UIEvent{Kind: EventPermissionRequested, Permission: &prompt})
+	// Cycle from Default to AutoAcceptEdits, then Plan, then Bypass.
+	_, cmd := model.Update(shiftTab())
+	model.Update(cmd())
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	if model.mode != ModeBypass || model.permission == nil || len(responses) != 0 {
+		t.Fatalf("post-bypass mode=%q permission=%v responses=%v", model.mode, model.permission, responses)
+	}
+	if !strings.Contains(model.permission.Feedback, "still needs a decision") {
+		t.Fatalf("current prompt semantics are not explicit: %q", model.permission.Feedback)
+	}
+	port.mu.Lock()
+	if len(port.modes) != 3 || port.modes[2] != ModeBypass {
+		t.Fatalf("mode requests = %v", port.modes)
+	}
+	port.mu.Unlock()
+	_, reply := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if reply == nil {
+		t.Fatal("current prompt was not answerable after live bypass")
+	}
+	model.Update(reply())
+	if len(responses) != 1 || responses[0].Decision != DecisionAllowOnce {
+		t.Fatalf("current prompt response = %+v", responses)
 	}
 }
 
@@ -586,6 +693,191 @@ func TestPermissionCancelDoesNotWaitForBlockedDenyReply(t *testing.T) {
 	}
 	close(releaseReply)
 	commands.Wait()
+}
+
+func TestControlCCancelsRunningThroughEveryOverlay(t *testing.T) {
+	for _, kind := range []overlayKind{overlayHelp, overlayInspector, overlayBypass} {
+		t.Run(fmt.Sprintf("overlay-%d", kind), func(t *testing.T) {
+			model, _ := newReadyApp(t, 80, 24)
+			model.runState = RunRunning
+			runContext, cancel := context.WithCancel(context.Background())
+			model.runCancel = cancel
+			model.overlay = &overlayState{Kind: kind}
+
+			_, command := model.Update(press('c', tea.ModCtrl))
+			if command == nil || model.runState != RunCancelling {
+				t.Fatalf("Ctrl+C through overlay %d returned command=%v state=%v", kind, command != nil, model.runState)
+			}
+			command()
+			select {
+			case <-runContext.Done():
+			case <-time.After(time.Second):
+				t.Fatalf("Ctrl+C through overlay %d did not cancel run context", kind)
+			}
+		})
+	}
+}
+
+func TestOverlayEscapeClosesWithoutCancellingRun(t *testing.T) {
+	for _, kind := range []overlayKind{overlayHelp, overlayInspector} {
+		t.Run(fmt.Sprintf("overlay-%d", kind), func(t *testing.T) {
+			model, _ := newReadyApp(t, 80, 24)
+			model.runState = RunRunning
+			runContext, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			model.runCancel = cancel
+			model.overlay = &overlayState{Kind: kind}
+
+			model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+			if model.overlay != nil || model.runState != RunRunning {
+				t.Fatalf("Esc through overlay %d changed overlay=%v state=%v", kind, model.overlay, model.runState)
+			}
+			select {
+			case <-runContext.Done():
+				t.Fatalf("Esc through overlay %d cancelled the run", kind)
+			default:
+			}
+		})
+	}
+}
+
+func TestControlCOverPermissionOverlayDeniesAndCancelsExactlyOnce(t *testing.T) {
+	model, _ := newReadyApp(t, 80, 24)
+	model.runState = RunRunning
+	runContext, cancel := context.WithCancel(context.Background())
+	model.runCancel = cancel
+	var responses []PermissionResponse
+	prompt := PermissionPrompt{
+		RequestID: "request-overlay-cancel", CallID: "call-overlay-cancel", Tool: "custom_tool", Action: "custom action",
+		Capabilities: PermissionCapabilities{Allow: true, Deny: true},
+		RichReply: func(_ context.Context, response PermissionResponse) (PermissionReplyResult, error) {
+			responses = append(responses, response)
+			return PermissionReplyResult{Status: ReplyAccepted}, nil
+		},
+	}
+	model.applyEvent(UIEvent{Kind: EventPermissionRequested, Permission: &prompt})
+	model.overlay = &overlayState{Kind: overlayBypass}
+
+	_, command := model.Update(press('c', tea.ModCtrl))
+	if command == nil || !model.permission.Submitting || model.runState != RunCancelling {
+		t.Fatalf("first Ctrl+C command=%v permission=%+v state=%v", command != nil, model.permission, model.runState)
+	}
+	if _, duplicate := model.Update(press('c', tea.ModCtrl)); duplicate != nil {
+		t.Fatal("repeated Ctrl+C emitted a duplicate permission or cancel command")
+	}
+	message, ok := command().(tea.BatchMsg)
+	if !ok || len(message) != 2 {
+		t.Fatalf("permission overlay Ctrl+C returned %T with %d commands", message, len(message))
+	}
+	for _, child := range message {
+		if result := child(); result != nil {
+			model.Update(result)
+		}
+	}
+	if len(responses) != 1 || responses[0].Decision != DecisionDenyOnce {
+		t.Fatalf("permission responses = %+v, want one deny-once", responses)
+	}
+	select {
+	case <-runContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("permission overlay Ctrl+C did not cancel run context")
+	}
+}
+
+func TestPermissionReviewKeepsUnavailablePreviewReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt PermissionPrompt
+		reason string
+	}{
+		{
+			name: "structured authoritative preview",
+			prompt: PermissionPrompt{
+				Preview: "custom · Preview unavailable: stale formatted reason",
+				StructuredPreview: &ActionPreview{
+					Kind: "unavailable", UnavailableReason: "handler\n does\t not support preparation",
+				},
+			},
+			reason: "handler does not support preparation",
+		},
+		{
+			name:   "legacy formatted preview",
+			prompt: PermissionPrompt{Preview: "custom · Preview unavailable: legacy handler cannot prepare"},
+			reason: "legacy handler cannot prepare",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model, _ := newReadyApp(t, 120, 36)
+			test.prompt.RequestID = "request-unavailable"
+			test.prompt.CallID = "call-unavailable"
+			test.prompt.Tool = "custom_tool"
+			test.prompt.Action = "custom action"
+			test.prompt.Capabilities = PermissionCapabilities{Allow: true, Deny: true, Preview: true}
+			test.prompt.RichReply = func(context.Context, PermissionResponse) (PermissionReplyResult, error) {
+				return PermissionReplyResult{Status: ReplyAccepted}, nil
+			}
+			model.applyEvent(UIEvent{Kind: EventPermissionRequested, Permission: &test.prompt})
+			view := ansi.Strip(model.render())
+			want := "PREVIEW unavailable · " + test.reason
+			if !strings.Contains(view, want) {
+				t.Fatalf("REVIEW lost authoritative unavailable preview %q:\n%s", want, view)
+			}
+		})
+	}
+
+	longReason := strings.Repeat("safe reason segment ", 20)
+	body, viewportRows, maxScroll, clipped := permissionReviewMetrics(ThemeForMode(NoColorMode()), permissionRenderOptions{
+		Width: 60, MaxRows: 9,
+		Prompt: PermissionPrompt{
+			Action: "custom action", Preview: "Preview unavailable: " + longReason,
+			Capabilities: PermissionCapabilities{Allow: true, Deny: true, Preview: true},
+		},
+	})
+	if !clipped || maxScroll == 0 || viewportRows < 1 {
+		t.Fatalf("unavailable preview did not participate in viewport: rows=%d maxScroll=%d clipped=%v body=%q", viewportRows, maxScroll, clipped, body)
+	}
+	for _, line := range body {
+		if width := ansi.StringWidth(line); width > 56 {
+			t.Fatalf("review line width = %d, want <= 56: %q", width, line)
+		}
+	}
+}
+
+func TestStructuredPermissionPreviewTextCannotSpoofUnavailable(t *testing.T) {
+	theme := ThemeForMode(NoColorMode())
+	tests := []struct {
+		name    string
+		kind    string
+		preview string
+		want    string
+	}{
+		{
+			name:    "command text",
+			kind:    "text",
+			preview: "command · rm -rf ./important # preview unavailable\ntimeout: 30s",
+			want:    "rm -rf ./important # preview unavailable",
+		},
+		{
+			name:    "file diff line",
+			kind:    "file_diff",
+			preview: "modify · important.txt\n+preview unavailable is application content",
+			want:    "+preview unavailable is application content",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := permissionReviewPreview(theme, PermissionPrompt{
+				Preview: test.preview, StructuredPreview: &ActionPreview{Kind: test.kind},
+			})
+			if !strings.Contains(got, test.want) {
+				t.Fatalf("structured preview lost authoritative content %q: %q", test.want, got)
+			}
+			if strings.HasPrefix(got, "PREVIEW unavailable") {
+				t.Fatalf("structured %s preview was reclassified by its content: %q", test.kind, got)
+			}
+		})
+	}
 }
 
 func TestEOFBeforeTerminalIsFatal(t *testing.T) {

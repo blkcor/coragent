@@ -178,6 +178,7 @@ func TestOnlyAssistantBlocksInterpretMarkdown(t *testing.T) {
 	if err := store.FinishTool("literal-tool", "# result **literal**", ToolSucceeded, time.Time{}); err != nil {
 		t.Fatalf("FinishTool: %v", err)
 	}
+	store.Blocks[store.callIndex["literal-tool"]].Expanded = true
 	store.AddNotice("# notice **literal**", time.Time{})
 
 	rendered := strings.Join(store.RenderLines(ThemeForMode(NoColorMode()), 80, 0), "\n")

@@ -108,28 +108,28 @@ func LayoutForSize(width, height int) Layout {
 
 	switch class {
 	case LayoutWide:
-		layout.ComposerMaxRows = 8
+		layout.ComposerMaxRows = 6
 		layout.PermissionWidth = min(contentWidth, 112)
 		layout.ShowModel = true
 		layout.ShowFullPath = true
 		layout.ShowFullMetadata = true
 		layout.TwoColumnDetail = true
 	case LayoutStandard:
-		layout.ComposerMaxRows = 8
+		layout.ComposerMaxRows = 6
 		layout.PermissionWidth = min(contentWidth, 84)
 		layout.ShowModel = true
 		layout.ShowFullPath = true
 		layout.ShowFullMetadata = true
 	case LayoutCompact:
-		layout.ComposerMaxRows = 6
+		layout.ComposerMaxRows = 4
 		layout.ShowModel = true
 	case LayoutMinimal:
 		layout.ComposerMaxRows = 3
 	}
 
-	// One header, one activity/footer, one hint row, and the minimum composer
-	// stay fixed. The transcript receives every remaining row.
-	layout.TranscriptRows = max(1, height-3-layout.ComposerMinRows)
+	// One ledger header, one quiet footer, and the minimum composer stay fixed.
+	// Help is an overlay, never a permanently reserved hint row.
+	layout.TranscriptRows = max(1, height-2-layout.ComposerMinRows)
 	return layout
 }
 

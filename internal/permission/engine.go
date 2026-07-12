@@ -52,12 +52,29 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
-// Rule is a single allow/deny rule for one action kind. Match is a command prefix
-// (for ActionCommand) or a file path (for edits/reads); "*" matches any call of
-// the rule's kind.
+const (
+	exactRuleVersion       = "exact-v2"
+	legacyExactRuleVersion = "exact-v1"
+	exactRuleAlgorithm     = "hmac-sha256"
+)
+
+type exactRuleScheme uint8
+
+const (
+	exactRuleNone exactRuleScheme = iota
+	exactRuleLegacySHA256
+	exactRuleHMACSHA256
+)
+
+// Rule is a single allow/deny rule for one action kind. Legacy family rules use
+// Match as a command prefix or path. Exact-call rules keep only a keyed,
+// domain-separated fingerprint over the action kind, tool name, and canonical
+// effective arguments. The scheme marker is intentionally not exported.
 type Rule struct {
-	Kind  core.ActionKind
-	Match string
+	Kind        core.ActionKind
+	Match       string
+	ExactDigest string
+	exactScheme exactRuleScheme
 }
 
 // RuleSet is the merged allow and deny lists. Deny is consulted before allow so a
@@ -69,6 +86,9 @@ type RuleSet struct {
 
 // ParseRule parses a "<kind>:<match>" settings entry, e.g. "command:git status".
 func ParseRule(s string) (Rule, error) {
+	if strings.HasPrefix(s, exactRuleVersion+":") || strings.HasPrefix(s, legacyExactRuleVersion+":") {
+		return parseExactRule(s)
+	}
 	i := strings.IndexByte(s, ':')
 	if i < 0 {
 		return Rule{}, fmt.Errorf("permission: rule %q must be \"<kind>:<match>\"", s)
@@ -82,6 +102,43 @@ func ParseRule(s string) (Rule, error) {
 		return Rule{}, fmt.Errorf("permission: rule %q has an empty match", s)
 	}
 	return Rule{Kind: kind, Match: match}, nil
+}
+
+func parseExactRule(s string) (Rule, error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 4 {
+		return Rule{}, fmt.Errorf("permission: malformed exact-call rule")
+	}
+	var scheme exactRuleScheme
+	switch {
+	case parts[0] == exactRuleVersion && parts[2] == exactRuleAlgorithm:
+		scheme = exactRuleHMACSHA256
+	case parts[0] == legacyExactRuleVersion && parts[2] == "sha256":
+		scheme = exactRuleLegacySHA256
+	default:
+		return Rule{}, fmt.Errorf("permission: unsupported exact-call rule version or algorithm")
+	}
+	kind, err := parseExactKind(parts[1])
+	if err != nil {
+		return Rule{}, err
+	}
+	digest := parts[3]
+	if len(digest) != FingerprintKeySize*2 {
+		return Rule{}, fmt.Errorf("permission: exact-call rule has an invalid fingerprint")
+	}
+	for _, char := range digest {
+		if !strings.ContainsRune("0123456789abcdef", char) {
+			return Rule{}, fmt.Errorf("permission: exact-call rule has an invalid fingerprint")
+		}
+	}
+	return Rule{Kind: kind, ExactDigest: digest, exactScheme: scheme}, nil
+}
+
+func parseExactKind(s string) (core.ActionKind, error) {
+	if strings.TrimSpace(s) == "unknown" {
+		return core.ActionUnknown, nil
+	}
+	return parseKind(s)
 }
 
 func parseKind(s string) (core.ActionKind, error) {
@@ -124,6 +181,12 @@ func ParseRules(allow, deny []string, logger *slog.Logger) RuleSet {
 				}
 				continue
 			}
+			if r.exactScheme == exactRuleLegacySHA256 {
+				if logger != nil {
+					logger.Warn("skipping unsafe legacy exact-call permission rule", "kind", kindLabel(r.Kind), "version", legacyExactRuleVersion)
+				}
+				continue
+			}
 			out = append(out, r)
 		}
 		return out
@@ -131,13 +194,25 @@ func ParseRules(allow, deny []string, logger *slog.Logger) RuleSet {
 	return RuleSet{Allow: parse(allow), Deny: parse(deny)}
 }
 
-// Matches reports whether the rule covers a call of the given kind. Command rules
-// match when the rule's tokens are a prefix of the call's command tokens at token
-// boundaries; other kinds match on exact path equality. "*" matches any call of
-// the kind.
+// Matches reports whether a family rule covers a call of the given kind. It does
+// not hold fingerprint key material, so exact-call rules fail safe here. Engine
+// policy paths use the private key-aware matches method instead. Command family
+// rules match on token prefixes; other families match exact paths. "*" matches
+// any call of the kind.
 func (r Rule) Matches(kind core.ActionKind, call core.ToolCall) bool {
+	return r.matches(FingerprintKey{}, kind, call)
+}
+
+func (r Rule) matches(key FingerprintKey, kind core.ActionKind, call core.ToolCall) bool {
 	if r.Kind != kind {
 		return false
+	}
+	if r.ExactDigest != "" {
+		if r.exactScheme != exactRuleHMACSHA256 {
+			return false
+		}
+		digest, err := exactCallFingerprint(key, kind, call)
+		return err == nil && digest == r.ExactDigest
 	}
 	if r.Match == "*" {
 		return true
@@ -206,9 +281,14 @@ type Config struct {
 	// Rules is the merged allow/deny rule set.
 	Rules RuleSet
 
-	// Save persists a remembered rule (allow reports allow vs deny; rule is the
-	// "<kind>:<match>" string). Nil disables persistence. A returned error is
-	// logged and swallowed — durability is lost but the action still runs.
+	// FingerprintKey enables keyed exact-call remember and reload. A zero value
+	// receives a session-ephemeral key: exact decisions still remember in memory,
+	// but their fingerprints are not persisted by this Engine.
+	FingerprintKey FingerprintKey
+
+	// Save persists a remembered family rule or versioned keyed fingerprint
+	// (allow reports allow vs deny). Nil disables persistence. A returned error is
+	// logged and swallowed; durability is lost but the action still runs.
 	Save func(allow bool, rule string) error
 
 	// Logger receives advisory messages. Nil uses slog.Default.
@@ -222,6 +302,9 @@ type Engine struct {
 	rules  RuleSet
 	save   func(allow bool, rule string) error
 	logger *slog.Logger
+
+	fingerprintKey        FingerprintKey
+	fingerprintPersistent bool
 }
 
 // New builds an Engine from the given Config.
@@ -230,24 +313,37 @@ func New(cfg Config) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	key := cfg.FingerprintKey
+	persistent := key.Valid()
+	if !key.Valid() {
+		var err error
+		key, err = newEphemeralFingerprintKey()
+		if err != nil {
+			logger.Warn("exact-call permission remember is unavailable", "err", err)
+		}
+	}
 	return &Engine{
 		mode:   cfg.Mode,
 		rules:  cfg.Rules,
 		save:   cfg.Save,
 		logger: logger,
+
+		fingerprintKey:        key,
+		fingerprintPersistent: persistent,
 	}
 }
 
-// SetMode changes the governing mode. It is intended to be called between turns.
+// SetMode changes the governing mode at one mutex-linearized point. A Decide that
+// snapshots the mode after this method returns observes the new value; a Decide
+// already waiting on a human retains its earlier snapshot.
 func (e *Engine) SetMode(m Mode) {
 	e.mu.Lock()
 	e.mode = m
 	e.mu.Unlock()
 }
 
-// Mode returns the current permission posture. Callers use it only for
-// frontend-neutral, between-run inspection; Decide still snapshots the same
-// value under the engine mutex for each action.
+// Mode returns the current permission posture. Decide snapshots the same value
+// under the engine mutex for each action.
 func (e *Engine) Mode() Mode {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -260,6 +356,7 @@ func (e *Engine) Decide(ctx context.Context, call core.ToolCall, kind core.Actio
 	e.mu.Lock()
 	mode := e.mode
 	rules := e.rules
+	key := e.fingerprintKey
 	e.mu.Unlock()
 
 	// 1. Bypass: allow everything soft, never consult rules.
@@ -278,14 +375,14 @@ func (e *Engine) Decide(ctx context.Context, call core.ToolCall, kind core.Actio
 	}
 
 	// 3. Deny rule wins over allow.
-	if matchesAny(rules.Deny, kind, call) {
+	if matchesAny(rules.Deny, key, kind, call) {
 		return core.PermissionResult{Allow: false, Reason: "denied by rule"}
 	}
 
 	// 4. Allow rule. A specific rule never auto-allows a compound command; only an
 	//    explicit "*" blanket does. (Deny above still uses prefix matching, so a
 	//    denied program heading a compound command stays refused.)
-	if matchesAllow(rules.Allow, kind, call) {
+	if matchesAllow(rules.Allow, key, kind, call) {
 		return core.PermissionResult{Allow: true}
 	}
 
@@ -304,6 +401,7 @@ func (e *Engine) DecideRich(ctx context.Context, input core.RichPermissionInput,
 	e.mu.Lock()
 	mode := e.mode
 	rules := e.rules
+	key := e.fingerprintKey
 	e.mu.Unlock()
 
 	allow := func() core.RichPermissionResult { return core.RichPermissionResult{Action: core.PermissionReplyAllow} }
@@ -317,9 +415,9 @@ func (e *Engine) DecideRich(ctx context.Context, input core.RichPermissionInput,
 		return deny("plan mode: changes are disabled")
 	case mode == ModePlan && input.Action == core.ActionRead:
 		return allow()
-	case matchesAny(rules.Deny, input.Action, input.EffectiveCall):
+	case matchesAny(rules.Deny, key, input.Action, input.EffectiveCall):
 		return deny("denied by rule")
-	case matchesAllow(rules.Allow, input.Action, input.EffectiveCall):
+	case matchesAllow(rules.Allow, key, input.Action, input.EffectiveCall):
 		return allow()
 	case mode == ModeAutoAcceptEdits && input.Action == core.ActionEdit:
 		return allow()
@@ -332,7 +430,7 @@ func (e *Engine) askRich(ctx context.Context, mode Mode, input core.RichPermissi
 	if input.RequestID == "" {
 		input.RequestID = core.RequestID(core.NewOpaqueID("permission"))
 	}
-	scope := rememberedScope(input.Action, input.EffectiveCall)
+	scope := e.rememberedScope(input.Action, input.EffectiveCall)
 	capabilities := core.PermissionCapabilities{
 		Allow: true, Deny: true, Remember: scope != nil,
 		ReviseArguments: true, SchemaAwareEdit: true,
@@ -348,7 +446,7 @@ func (e *Engine) askRich(ctx context.Context, mode Mode, input core.RichPermissi
 	legacyReply := make(chan core.PermissionDecision, 1)
 	legacyRequest := core.PermissionRequest{
 		ToolCall: input.EffectiveCall, Reason: askReason(input.EffectiveCall, input.Action),
-		RememberedRule: rememberedRuleString(input.Action, input.EffectiveCall), ReplyPath: legacyReply,
+		RememberedRule: e.rememberedRuleString(input.Action, input.EffectiveCall), ReplyPath: legacyReply,
 	}
 	legacyEvent := core.RunEvent{Type: core.PermissionRequestedEvent, Permission: &legacyRequest}
 	if emit == nil {
@@ -393,12 +491,22 @@ func (e *Engine) askRich(ctx context.Context, mode Mode, input core.RichPermissi
 	}
 }
 
-func rememberedScope(kind core.ActionKind, call core.ToolCall) *core.RememberedRuleScope {
-	match := deriveMatch(kind, call)
-	if match == "" {
+func (e *Engine) rememberedScope(kind core.ActionKind, call core.ToolCall) *core.RememberedRuleScope {
+	rule, _, ok := rememberedRule(e.fingerprintKey, kind, call)
+	if !ok {
 		return nil
 	}
-	return &core.RememberedRuleScope{Kind: kind, Match: match}
+	if rule.ExactDigest != "" {
+		display := "exact " + call.ToolName + " call"
+		return &core.RememberedRuleScope{
+			Kind: kind, Match: display, ScopeKind: core.RememberedRuleScopeExact,
+			ToolName: call.ToolName, Display: display,
+		}
+	}
+	return &core.RememberedRuleScope{
+		Kind: kind, Match: rule.Match, ScopeKind: core.RememberedRuleScopeFamily,
+		ToolName: call.ToolName, Display: rule.Match,
+	}
 }
 
 func modeName(mode Mode) string {
@@ -414,9 +522,9 @@ func modeName(mode Mode) string {
 	}
 }
 
-func matchesAny(rules []Rule, kind core.ActionKind, call core.ToolCall) bool {
+func matchesAny(rules []Rule, key FingerprintKey, kind core.ActionKind, call core.ToolCall) bool {
 	for _, r := range rules {
-		if r.Matches(kind, call) {
+		if r.matches(key, kind, call) {
 			return true
 		}
 	}
@@ -427,10 +535,16 @@ func matchesAny(rules []Rule, kind core.ActionKind, call core.ToolCall) bool {
 // (non-"*") command rule never covers a compound command (one carrying shell
 // operators): that is not the simple family the human vetted, so it falls through
 // to a prompt. An explicit "*" blanket still covers everything of its kind.
-func matchesAllow(rules []Rule, kind core.ActionKind, call core.ToolCall) bool {
+func matchesAllow(rules []Rule, key FingerprintKey, kind core.ActionKind, call core.ToolCall) bool {
 	compound := kind == core.ActionCommand && hasShellOperators(stringArg(call.Arguments, "command"))
 	for _, r := range rules {
 		if r.Kind != kind {
+			continue
+		}
+		if r.ExactDigest != "" {
+			if r.matches(key, kind, call) {
+				return true
+			}
 			continue
 		}
 		if r.Match == "*" {
@@ -439,7 +553,7 @@ func matchesAllow(rules []Rule, kind core.ActionKind, call core.ToolCall) bool {
 		if compound {
 			continue
 		}
-		if r.Matches(kind, call) {
+		if r.matches(key, kind, call) {
 			return true
 		}
 	}
@@ -455,7 +569,7 @@ func (e *Engine) ask(ctx context.Context, call core.ToolCall, kind core.ActionKi
 	req := &core.PermissionRequest{
 		ToolCall:       call,
 		Reason:         askReason(call, kind),
-		RememberedRule: rememberedRuleString(kind, call),
+		RememberedRule: e.rememberedRuleString(kind, call),
 		ReplyPath:      reply,
 	}
 	if err := emit(core.RunEvent{Type: core.PermissionRequestedEvent, Permission: req}); err != nil {
@@ -496,11 +610,10 @@ func askReason(call core.ToolCall, kind core.ActionKind) string {
 // the in-memory set immediately (so the next matching action benefits) and then
 // persisted. A persistence failure is logged and swallowed.
 func (e *Engine) remember(kind core.ActionKind, call core.ToolCall, d core.PermissionDecision) {
-	match := deriveMatch(kind, call)
-	if match == "" {
+	rule, ruleStr, ok := rememberedRule(e.fingerprintKey, kind, call)
+	if !ok {
 		return
 	}
-	rule := Rule{Kind: kind, Match: match}
 
 	e.mu.Lock()
 	if d.Allow {
@@ -509,12 +622,12 @@ func (e *Engine) remember(kind core.ActionKind, call core.ToolCall, d core.Permi
 		e.rules.Deny = append(e.rules.Deny, rule)
 	}
 	save := e.save
+	persistExact := e.fingerprintPersistent
 	e.mu.Unlock()
 
-	if save == nil {
+	if save == nil || (rule.ExactDigest != "" && !persistExact) {
 		return
 	}
-	ruleStr := kindLabel(kind) + ":" + match
 	if err := save(d.Allow, ruleStr); err != nil {
 		e.logger.Warn("failed to persist remembered permission rule", "rule", ruleStr, "err", err)
 	}
@@ -541,8 +654,10 @@ func deriveMatch(kind core.ActionKind, call core.ToolCall) string {
 			return toks[0] + " " + toks[1]
 		}
 		return toks[0]
-	default:
+	case core.ActionRead, core.ActionEdit:
 		return absPath(stringArg(call.Arguments, "path"))
+	default:
+		return ""
 	}
 }
 
@@ -559,12 +674,25 @@ func isSubcommandToken(t string) bool {
 // rememberedRuleString is the "<kind>:<match>" rule a Remember decision would
 // persist for this call, or "" when the action cannot be safely generalized. It
 // is what the prompt previews so the human sees what "remember" will save.
-func rememberedRuleString(kind core.ActionKind, call core.ToolCall) string {
-	match := deriveMatch(kind, call)
-	if match == "" {
+func (e *Engine) rememberedRuleString(kind core.ActionKind, call core.ToolCall) string {
+	_, rule, ok := rememberedRule(e.fingerprintKey, kind, call)
+	if !ok {
 		return ""
 	}
-	return kindLabel(kind) + ":" + match
+	return rule
+}
+
+func rememberedRule(key FingerprintKey, kind core.ActionKind, call core.ToolCall) (Rule, string, bool) {
+	if match := deriveMatch(kind, call); match != "" {
+		return Rule{Kind: kind, Match: match}, kindLabel(kind) + ":" + match, true
+	}
+	digest, err := exactCallFingerprint(key, kind, call)
+	if err != nil {
+		return Rule{}, "", false
+	}
+	rule := Rule{Kind: kind, ExactDigest: digest, exactScheme: exactRuleHMACSHA256}
+	persisted := exactRuleVersion + ":" + kindLabel(kind) + ":" + exactRuleAlgorithm + ":" + digest
+	return rule, persisted, true
 }
 
 // Engine satisfies the soft-permission seam.

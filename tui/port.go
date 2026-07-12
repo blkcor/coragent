@@ -11,6 +11,9 @@ import (
 type SessionPort interface {
 	Describe(context.Context) (SessionInfo, error)
 	Run(context.Context, string) (<-chan UIEvent, error)
+	// SetMode may be called while a run is active. Once it returns successfully,
+	// later permission decisions observe the new mode; an already-open prompt still
+	// requires an explicit reply.
 	SetMode(context.Context, SessionMode) error
 	Close(context.Context) error
 }
@@ -31,6 +34,7 @@ const (
 // SessionInfo contains only secret-free facts needed by the fixed shell.
 type SessionInfo struct {
 	Project                 string
+	Branch                  string
 	Model                   string
 	Provider                string
 	Mode                    SessionMode

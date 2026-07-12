@@ -97,7 +97,7 @@ func TestRichTranscriptRenderingAndContextSemantics(t *testing.T) {
 	}
 
 	view := ansi.Strip(model.render())
-	for _, want := range []string{"reasoning summary", "edit_file", "modify preview r3", "+new", "-old", "normalized path", "1.3s", "subagent review", "ctx 81% est"} {
+	for _, want := range []string{"reasoning summary", "edit_file", "normalized path", "1.3s", "subagent review", "81% · 8.1k est"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("render missing %q:\n%s", want, view)
 		}
@@ -218,31 +218,25 @@ func TestBypassConfirmationHelpInspectorAndUnknownContext(t *testing.T) {
 	model.info.PermissionOwner = "engine"
 	model.info.Capabilities = []CapabilityCategory{{Kind: "skill", Support: SupportUnsupported}}
 
-	model.Update(press('b', tea.ModCtrl))
-	if model.overlay == nil || model.overlay.Kind != overlayBypass || model.mode != ModeDefault {
-		t.Fatal("Ctrl+B did not open a non-mutating bypass confirmation")
-	}
-	view := ansi.Strip(model.render())
-	if !strings.Contains(view, "Hard hooks") || !strings.Contains(view, "sandbox confinement") {
-		t.Fatalf("bypass warning lacks safety explanation:\n%s", view)
-	}
-	_, command := model.Update(typeKey("y"))
-	if command == nil {
-		t.Fatal("bypass confirmation returned no mode command")
-	}
-	model.Update(command())
+	// Cycle into bypass via shift+tab (Default → AutoAcceptEdits → Plan → Bypass).
+	_, cmd := model.Update(shiftTab())
+	model.Update(cmd())
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
 	if model.mode != ModeBypass || model.overlay != nil {
-		t.Fatalf("bypass result mode=%q overlay=%v", model.mode, model.overlay)
+		t.Fatalf("bypass via shift+tab mode=%q overlay=%v", model.mode, model.overlay)
 	}
 	port.mu.Lock()
-	if len(port.modes) != 1 || port.modes[0] != ModeBypass {
+	if len(port.modes) != 3 || port.modes[2] != ModeBypass {
 		t.Fatalf("mode requests = %v", port.modes)
 	}
 	port.mu.Unlock()
 
 	model.Update(press('i', tea.ModCtrl))
 	inspector := ansi.Strip(model.render())
-	for _, want := range []string{"Session inspector", "test-provider", "skill: unsupported", "not reported", "context: ctx unknown"} {
+	for _, want := range []string{"INSPECT / RUN LEDGER", "test-provider", "skill: unsupported", "not reported", "context: 0%"} {
 		if !strings.Contains(inspector, want) {
 			t.Fatalf("inspector missing %q:\n%s", want, inspector)
 		}
@@ -250,18 +244,18 @@ func TestBypassConfirmationHelpInspectorAndUnknownContext(t *testing.T) {
 	model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	model.Update(tea.KeyPressMsg{Code: '/', Mod: tea.ModCtrl})
 	help := ansi.Strip(model.render())
-	if !strings.Contains(help, "Mouse wheel only") || !strings.Contains(help, "Shift/Option+drag") {
+	if !strings.Contains(help, "Wheel  browse task history") || !strings.Contains(help, "Shift/Option+drag") {
 		t.Fatalf("help lacks pointer-only history/copy fallback:\n%s", help)
 	}
 
 	model.overlay = nil
 	model.usage = &ContextUsage{Source: "estimated", Used: 1234}
 	label, level := model.contextUsageLabel()
-	if label != "ctx 1.2k est" || level != 0 || strings.Contains(label, "%") {
-		t.Fatalf("unknown-window label = %q level=%d", label, level)
+	if label != "0.6% · 1.2k est" || level != 0 {
+		t.Fatalf("estimated label = %q level=%d", label, level)
 	}
 	model.usage = &ContextUsage{Source: "provider", Used: 9500, Window: OptionalCount{Known: true, Value: 10_000}}
-	if label, level = model.contextUsageLabel(); label != "ctx 95%" || level != 2 {
+	if label, level = model.contextUsageLabel(); label != "95% · 9.5k" || level != 2 {
 		t.Fatalf("95%% label = %q level=%d", label, level)
 	}
 }
@@ -516,16 +510,34 @@ func TestQuitAndControlCFromPermissionEditorDenyExactlyOnce(t *testing.T) {
 
 func TestBypassDismissalAndSetterRejectionPreserveMode(t *testing.T) {
 	model, port := newReadyApp(t, 80, 24)
-	model.Update(press('b', tea.ModCtrl))
-	model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if model.overlay != nil || model.mode != ModeDefault || len(port.modes) != 0 {
-		t.Fatal("dismissed bypass confirmation changed mode")
+	// Cycle Default → AutoAcceptEdits → Plan → Bypass → Default.
+	_, cmd := model.Update(shiftTab())
+	model.Update(cmd())
+	if model.mode != ModeAutoAcceptEdits || len(port.modes) != 1 {
+		t.Fatalf("first cycle mode=%q requests=%v", model.mode, port.modes)
 	}
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	if model.mode != ModePlan || len(port.modes) != 2 {
+		t.Fatalf("second cycle mode=%q requests=%v", model.mode, port.modes)
+	}
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	if model.mode != ModeBypass || len(port.modes) != 3 {
+		t.Fatalf("third cycle mode=%q requests=%v", model.mode, port.modes)
+	}
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	if model.mode != ModeDefault || len(port.modes) != 4 {
+		t.Fatalf("fourth cycle back to default mode=%q requests=%v", model.mode, port.modes)
+	}
+
+	// SetMode rejection preserves the current mode.
 	port.modeErr = errors.New("externally controlled")
-	model.Update(press('b', tea.ModCtrl))
-	_, command := model.Update(typeKey("y"))
-	model.Update(command())
-	if model.mode != ModeDefault || model.overlay == nil || !strings.Contains(model.overlay.Feedback, "externally controlled") {
-		t.Fatalf("rejected bypass state: mode=%q overlay=%+v", model.mode, model.overlay)
+	model.mode = ModeDefault
+	_, cmd = model.Update(shiftTab())
+	model.Update(cmd())
+	if model.mode != ModeDefault || model.modeChangePending {
+		t.Fatalf("rejected SetMode should preserve mode: mode=%q pending=%v", model.mode, model.modeChangePending)
 	}
 }

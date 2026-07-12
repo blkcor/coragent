@@ -77,7 +77,7 @@ func (composer *composerModel) Configure(theme Theme, layout Layout) {
 	styles.Blurred.Prompt = theme.MutedStyle
 	styles.Blurred.Text = theme.MutedStyle
 	styles.Cursor.Color = theme.AccentStyle.GetForeground()
-	styles.Cursor.Shape = tea.CursorBar
+	styles.Cursor.Shape = tea.CursorBlock
 	styles.Cursor.Blink = !theme.Mode.ReducedMotion
 	styles.Cursor.BlinkSpeed = 600 * time.Millisecond
 	composer.textarea.SetStyles(styles)

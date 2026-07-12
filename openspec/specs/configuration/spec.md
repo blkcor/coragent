@@ -341,16 +341,66 @@ capability detection, or frontend-specific environment variables.
 - **WHEN** a different frontend loads the same settings through the public SDK
 - **THEN** it receives harness configuration without Bubble Tea, terminal-layout, or TUI keybinding concepts
 
+### Requirement: Exact permission fingerprint key remains a separate secret
+The standard bootstrap SHALL load or create stable per-user exact-call
+fingerprint key material outside home and project `settings.json`, and a direct
+SDK session with remembered-rule persistence enabled SHALL use the same secret
+lifecycle. The implementation SHALL open the parent and key through no-follow
+file descriptors and validate before reading that the parent belongs to the
+current user, is not group/other writable, and has no extended ACL; the key SHALL
+be a current-user-owned regular `0600` file with one link, the expected length,
+and no extended ACL. A private lifecycle lock SHALL serialize concurrent create
+or rotation. New key material SHALL be written and synced completely before an
+atomic no-backup publication. The public SDK SHALL also expose an additive
+redacting value type for embedders to inject equivalent key material. The key
+MUST NOT appear in settings, remembered rules, logs, formatted config, JSON
+descriptors, or session descriptions. Platforms that cannot validate equivalent
+ownership, link, mode, and ACL facts MUST fail closed.
+
+#### Scenario: Standard bootstrap creates a private key
+- **WHEN** bootstrap starts without explicitly injected fingerprint key material
+- **THEN** it loads or creates `~/.coragent/permission-fingerprint.key`
+- **THEN** the path is a regular `0600` file containing stable random key material
+
+#### Scenario: Direct persistent SDK session gets reloadable exact rules
+- **WHEN** a direct SDK caller enables remembered-rule persistence without injecting a key
+- **THEN** standard session construction loads or creates the same private per-user key
+- **THEN** an exact rule persisted by one session can match after restart
+
+#### Scenario: Key representations are redacted
+- **WHEN** injected fingerprint key material is formatted, JSON encoded, or sent to structured logging
+- **THEN** the representation is explicitly redacted
+- **THEN** neither raw nor encoded key material is exposed alongside a remembered rule
+
+#### Scenario: Unsafe existing key is rotated without being trusted
+- **WHEN** the key path is a symlink, has broad mode, wrong ownership, unexpected links, wrong length, or an extended ACL
+- **AND** its parent directory is safe for replacement
+- **THEN** the implementation does not read or chmod the old key
+- **THEN** it removes all `exact-v1` and `exact-v2` selectors from raw home and project settings before atomically replacing the key without a backup
+- **THEN** the lifecycle returns rotated status so the same session construction filters its already-loaded exact selectors
+- **THEN** a secret-safe warning recommends rotating credentials that may have appeared in remembered exact calls
+
+#### Scenario: Missing key invalidates persisted exact selectors
+- **WHEN** no fingerprint key exists but home or project settings contain exact selectors
+- **THEN** the selectors are scrubbed before a fresh key is published
+- **THEN** the lifecycle returns fresh status so the same session construction also filters its in-memory exact selectors
+
+#### Scenario: Unsafe parent fails closed
+- **WHEN** the fingerprint-key parent has wrong ownership, group/other write access, or an extended ACL
+- **THEN** session construction fails with actionable remediation
+- **THEN** no existing key bytes are read and no replacement is published
+
 ### Requirement: Legacy loading behavior remains compatible
 Adding public loading and bootstrap SHALL preserve the existing `Load`,
 `LoadFrom`, defaults, environment-reference, merge, validation, missing-file, and
 remembered-permission persistence behavior used by prior phases. Existing public
 `SessionConfig`, `NewSession`, and `NewSessionWithError` callers MUST remain
-source- and behavior-compatible.
+source- and behavior-compatible except for the mandatory removal of unsafe
+unkeyed exact-call selectors.
 
 #### Scenario: Legacy Load discovers files
 - **WHEN** an existing internal caller invokes the legacy `Load` operation with the same home directory, project directory, environment, and files as before Phase 7
-- **THEN** it receives the same merged settings or equivalent error as before Phase 7
+- **THEN** it receives the same merged settings or equivalent error as before Phase 7 after unsafe `exact-v1` selectors are scrubbed
 
 #### Scenario: Legacy LoadFrom skips discovery
 - **WHEN** an existing caller supplies settings directly through `LoadFrom`

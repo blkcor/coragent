@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -72,6 +73,10 @@ type TranscriptBlock struct {
 
 	Expanded bool
 	version  uint64
+	// ledgerTask and ledgerStep are render-only ordinals derived from append
+	// order. They never participate in event identity or execution state.
+	ledgerTask int
+	ledgerStep int
 
 	sanitizer          Sanitizer
 	reasoningSanitizer Sanitizer
@@ -90,7 +95,7 @@ func formatDuration(duration time.Duration) string {
 func renderActionPreview(theme Theme, preview ActionPreview, revision uint64, width int, expanded bool) []string {
 	width = max(1, width)
 	operation := firstNonEmpty(preview.Operation, "action")
-	header := fmt.Sprintf("   %s preview", operation)
+	header := fmt.Sprintf("   REVIEW  %s", operation)
 	if revision > 0 {
 		header += fmt.Sprintf(" r%d", revision)
 	}
@@ -98,8 +103,7 @@ func renderActionPreview(theme Theme, preview ActionPreview, revision uint64, wi
 	switch preview.Kind {
 	case "file_diff":
 		if preview.FileDiff == nil {
-			lines = append(lines, theme.WarningStyle.Render("   preview unavailable: missing diff payload"))
-			break
+			return nil
 		}
 		diff := preview.FileDiff
 		path := firstNonEmpty(diff.Path, strings.Join(preview.Targets, ", "))
@@ -155,11 +159,13 @@ func renderActionPreview(theme Theme, preview ActionPreview, revision uint64, wi
 			lines = append(lines, theme.MutedStyle.Render(ansi.Truncate("   "+value, width, theme.Glyphs.Ellipsis)))
 		}
 	case "unavailable":
-		lines = append(lines, theme.WarningStyle.Render("   preview unavailable: "+SanitizeString(firstNonEmpty(preview.UnavailableReason, "not provided"))))
+		// Capability diagnostics belong in the inspector. The run ledger keeps
+		// unsupported preview plumbing out of the primary timeline.
+		return nil
 	default:
 		value := firstNonEmpty(preview.Text, preview.Summary)
 		if value == "" {
-			value = "preview unavailable"
+			return nil
 		}
 		for _, line := range wrapPlain(value, max(1, width-3)) {
 			lines = append(lines, theme.MutedStyle.Render("   "+line))
@@ -807,11 +813,39 @@ func (store *TranscriptStore) RenderRows(theme Theme, width, frame int) []Render
 	}
 	store.ensureIndexes()
 	lines := make([]RenderedTranscriptLine, 0, len(store.Blocks)*3)
+	taskByRun := make(map[string]int)
+	stepsByTask := make(map[int]int)
+	currentTask := 0
 	for index := range store.Blocks {
+		block := store.Blocks[index]
+		if block.Kind == BlockUser {
+			if number, ok := taskByRun[block.RunID]; block.RunID != "" && ok {
+				currentTask = number
+			} else {
+				currentTask++
+				if block.RunID != "" {
+					taskByRun[block.RunID] = currentTask
+				}
+			}
+		} else if block.RunID != "" {
+			if number, ok := taskByRun[block.RunID]; ok {
+				currentTask = number
+			} else {
+				currentTask++
+				taskByRun[block.RunID] = currentTask
+			}
+		} else if currentTask == 0 {
+			currentTask = 1
+		}
+		block.ledgerTask = currentTask
+		if block.Kind == BlockTool {
+			stepsByTask[currentTask]++
+			block.ledgerStep = stepsByTask[currentTask]
+		}
 		if len(lines) > 0 && (index == 0 || store.Blocks[index-1].Kind != BlockTool || store.Blocks[index].Kind != BlockTool) {
 			lines = append(lines, RenderedTranscriptLine{BlockID: store.Blocks[index].ID, Line: -1})
 		}
-		for line, text := range store.renderBlock(theme, store.Blocks[index], width, frame) {
+		for line, text := range store.renderBlock(theme, block, width, frame) {
 			lines = append(lines, RenderedTranscriptLine{
 				BlockID: store.Blocks[index].ID,
 				Line:    line,
@@ -820,6 +854,32 @@ func (store *TranscriptStore) RenderRows(theme Theme, width, frame int) []Render
 		}
 	}
 	return lines
+}
+
+// CurrentTaskNumber returns the stable one-based ledger number of the latest
+// user task. It is intentionally derived from append-only transcript order.
+func (store *TranscriptStore) CurrentTaskNumber() int {
+	if store == nil {
+		return 0
+	}
+	tasks := 0
+	seenRuns := make(map[string]struct{})
+	for _, block := range store.Blocks {
+		if block.Kind == BlockUser {
+			tasks++
+			if block.RunID != "" {
+				seenRuns[block.RunID] = struct{}{}
+			}
+			continue
+		}
+		if block.RunID != "" {
+			if _, ok := seenRuns[block.RunID]; !ok {
+				tasks++
+				seenRuns[block.RunID] = struct{}{}
+			}
+		}
+	}
+	return tasks
 }
 
 func (store *TranscriptStore) renderBlock(theme Theme, block TranscriptBlock, width, frame int) []string {
@@ -862,15 +922,10 @@ func renderTranscriptBlockCached(theme Theme, block TranscriptBlock, width, fram
 	switch block.Kind {
 	case BlockUser:
 		promptWidth := min(width, MaximumProseWidth)
-		bodyWidth := max(1, promptWidth-2)
-		wrapped := wrapProse(block.Text, bodyWidth)
+		wrapped := wrapProse(block.Text, promptWidth)
 		lines := make([]string, 0, len(wrapped))
-		for index, line := range wrapped {
-			prefix := "  "
-			if index == 0 {
-				prefix = theme.Glyphs.Focus + " "
-			}
-			lines = append(lines, theme.SurfaceStyle.Render(padCells(prefix+line, promptWidth)))
+		for _, line := range wrapped {
+			lines = append(lines, theme.SurfaceStyle.Render(padCells(line, promptWidth)))
 		}
 		return lines
 	case BlockAssistant:
@@ -991,7 +1046,14 @@ func renderTranscriptBlockCached(theme Theme, block TranscriptBlock, width, fram
 		name = SanitizeString(name)
 		arguments := strings.TrimSpace(SanitizeString(block.Arguments))
 		status := visualSeparator(theme) + visual.Label
-		contentWidth := max(1, width-3)
+		if block.Duration > 0 && block.ToolState >= ToolDone {
+			status += visualSeparator(theme) + formatDuration(block.Duration)
+		}
+		step := "STEP --"
+		if block.ledgerStep > 0 {
+			step = fmt.Sprintf("STEP %02d", block.ledgerStep)
+		}
+		contentWidth := max(1, width-CellWidth(step)-3)
 		nameWidth := CellWidth(name)
 		statusWidth := CellWidth(status)
 		if nameWidth+statusWidth > contentWidth {
@@ -1005,13 +1067,10 @@ func renderTranscriptBlockCached(theme Theme, block TranscriptBlock, width, fram
 				argumentText = "(" + ansi.Truncate(arguments, argumentWidth-2, theme.Glyphs.Ellipsis) + ")"
 			}
 		}
-		if block.Duration > 0 && block.ToolState >= ToolDone {
-			status += visualSeparator(theme) + formatDuration(block.Duration)
-		}
-		line := visual.Style.Render(visual.Glyph) + "  " + theme.StrongStyle.Render(name) +
+		line := theme.MutedStyle.Render(step+"  ") + visual.Style.Render(visual.Glyph) + " " + theme.StrongStyle.Render(name) +
 			theme.MutedStyle.Render(argumentText) + visual.Style.Render(status)
 		lines := []string{line}
-		if block.Preview != nil {
+		if block.Preview != nil && (block.Expanded || block.ToolState < ToolDone) {
 			lines = append(lines, renderActionPreview(theme, *block.Preview, block.Revision, max(1, width-4), block.Expanded)...)
 		}
 		for _, hook := range block.Hooks {
@@ -1020,7 +1079,7 @@ func renderTranscriptBlockCached(theme Theme, block TranscriptBlock, width, fram
 		for _, notice := range block.Notices {
 			lines = append(lines, theme.WarningStyle.Render("   ! "+SanitizeString(notice)))
 		}
-		if block.Result != "" && (block.ToolState == ToolError || block.ToolState == ToolWasDenied || block.ToolState == ToolWasHookBlocked || block.ToolState == ToolDone) {
+		if block.Result != "" && (block.ToolState == ToolError || block.ToolState == ToolWasDenied || block.ToolState == ToolWasHookBlocked || (block.ToolState == ToolDone && block.Expanded)) {
 			branch := "└"
 			continuation := "  "
 			if theme.Mode.ASCII {
@@ -1125,11 +1184,21 @@ func wrapProse(value string, width int) []string {
 	return lines
 }
 
+func renderElevatedLine(theme Theme, style lipgloss.Style, value string, width int) string {
+	width = max(1, width)
+	value = ansi.Truncate(value, width, "")
+	if theme.Mode.Color != ColorNoColor {
+		style = style.Background(semanticColor(theme.Mode.Color, theme.Palette.Elevated, 234))
+	}
+	return style.Render(padCells(value, width))
+}
+
 type permissionRenderOptions struct {
 	Width       int
 	MaxRows     int
 	Prompt      PermissionPrompt
 	Submitting  bool
+	Selected    permissionAction
 	Feedback    string
 	TooSmall    bool
 	Scroll      int
@@ -1138,36 +1207,51 @@ type permissionRenderOptions struct {
 	Grants      SandboxGrants
 }
 
-func renderPermissionLines(theme Theme, options permissionRenderOptions) []string {
-	width := options.Width
-	if width < 1 {
-		return nil
-	}
-	if options.TooSmall {
-		return renderTinyPermissionLines(options)
-	}
-	if options.View != permissionDecision {
-		return renderPermissionEditorLines(theme, options)
-	}
+const permissionPreviewReasonMaxCells = 240
 
-	contentWidth := max(1, width-4)
-	separator := visualSeparator(theme)
-	title := "Permission required" + separator + SanitizeString(options.Prompt.Tool)
-	if options.Prompt.Revision > 0 {
-		title += fmt.Sprintf("%spreview r%d", separator, options.Prompt.Revision)
+func permissionReviewPreview(theme Theme, prompt PermissionPrompt) string {
+	preview := strings.TrimSpace(SanitizeString(prompt.Preview))
+	reason := ""
+	unavailable := false
+	if structured := prompt.StructuredPreview; structured != nil {
+		// A structured preview is authoritative. Its user-controlled text may
+		// legitimately contain the legacy marker phrase, so never reclassify it by
+		// parsing formatted prose.
+		if strings.EqualFold(strings.TrimSpace(structured.Kind), "unavailable") {
+			unavailable = true
+			reason = structured.UnavailableReason
+		}
+	} else if lower := strings.ToLower(preview); strings.Contains(lower, "preview unavailable") {
+		// Caller-owned legacy prompts have no typed preview contract. Retain the
+		// compatibility parser only for that unstructured path.
+		unavailable = true
+		index := strings.Index(lower, "preview unavailable")
+		if reason == "" {
+			reason = strings.TrimLeft(preview[index+len("preview unavailable"):], " \t:·|-")
+		}
 	}
-	reviewValues := []string{"Action: " + SanitizeString(options.Prompt.Action)}
+	if unavailable {
+		reason = strings.Join(strings.Fields(SanitizeString(reason)), " ")
+		if reason == "" {
+			reason = "reason not provided"
+		}
+		reason = ansi.Truncate(reason, permissionPreviewReasonMaxCells, theme.Glyphs.Ellipsis)
+		return "PREVIEW unavailable" + visualSeparator(theme) + reason
+	}
+	if preview == "" {
+		return ""
+	}
+	return "PREVIEW " + preview
+}
+
+func permissionReviewMetrics(theme Theme, options permissionRenderOptions) (body []string, viewportRows, maxScroll int, clipped bool) {
+	contentWidth := max(1, options.Width-4)
+	reviewValues := []string{"ACTION  " + SanitizeString(options.Prompt.Action)}
 	if options.Prompt.Reason != "" {
-		reviewValues = append(reviewValues, "Why: "+SanitizeString(options.Prompt.Reason))
-	}
-	if options.Prompt.Origin != "" {
-		reviewValues = append(reviewValues, "Origin: "+SanitizeString(options.Prompt.Origin))
-	}
-	if options.Prompt.Protocol != "" {
-		reviewValues = append(reviewValues, "Protocol: "+SanitizeString(options.Prompt.Protocol))
+		reviewValues = append(reviewValues, "WHY     "+SanitizeString(options.Prompt.Reason))
 	}
 	if options.Prompt.RememberScope != "" {
-		reviewValues = append(reviewValues, "Remember scope: "+SanitizeString(options.Prompt.RememberScope))
+		reviewValues = append(reviewValues, "SCOPE   "+SanitizeString(options.Prompt.RememberScope))
 	}
 	if options.Prompt.Capabilities.SandboxGrants && options.Prompt.GrantOptions.Support == SupportSupported {
 		grantDimensions := make([]string, 0, 3)
@@ -1191,96 +1275,117 @@ func renderPermissionLines(theme Theme, options permissionRenderOptions) []strin
 	if len(options.Grants.ReadRoots) > 0 || len(options.Grants.WriteRoots) > 0 || options.Grants.Network {
 		reviewValues = append(reviewValues, "One-call grants: "+formatSandboxGrants(options.Grants))
 	}
-	preview := SanitizeString(options.Prompt.Preview)
-	if preview == "" {
-		preview = "unavailable"
+	if preview := permissionReviewPreview(theme, options.Prompt); preview != "" {
+		reviewValues = append(reviewValues, preview)
 	}
-	reviewValues = append(reviewValues, "Preview: "+preview)
-	body := make([]string, 0, len(reviewValues)*2)
+	body = make([]string, 0, len(reviewValues)*2)
 	for _, value := range reviewValues {
 		body = append(body, wrapPlain(value, contentWidth)...)
 	}
 
+	actionRows := len(enabledPermissionActions(options.Prompt, false))
+	if options.Submitting {
+		actionRows = 1
+	}
+	fixedRows := 4 + actionRows // divider, title, decision heading, actions, key hint
+	if options.Feedback != "" {
+		fixedRows++
+	}
+	viewportRows = max(1, max(8, options.MaxRows)-fixedRows)
+	clipped = len(body) > viewportRows
+	if clipped {
+		viewportRows = max(1, max(8, options.MaxRows)-fixedRows-1) // stable position row
+	}
+	maxScroll = max(0, len(body)-viewportRows)
+	return body, viewportRows, maxScroll, clipped
+}
+
+func renderPermissionLines(theme Theme, options permissionRenderOptions) []string {
+	width := options.Width
+	if width < 1 {
+		return nil
+	}
+	if options.TooSmall {
+		return renderTinyPermissionLines(options)
+	}
+	if options.View != permissionDecision {
+		return renderPermissionEditorLines(theme, options)
+	}
+
+	contentWidth := max(1, width-4)
+	separator := visualSeparator(theme)
+	title := "REVIEW" + separator + SanitizeString(options.Prompt.Tool)
+	if options.Prompt.Revision > 0 {
+		title += fmt.Sprintf("%spreview r%d", separator, options.Prompt.Revision)
+	}
 	feedback := ""
 	if options.Feedback != "" {
 		feedback = "! " + SanitizeString(options.Feedback)
 	}
 
-	maxRows := max(8, options.MaxRows)
-	fixedRows := 6 // divider, title, question, baseline actions, and key hint
-	extraActions := 0
-	if options.Prompt.Capabilities.Remember {
-		extraActions++
-	}
-	if options.Prompt.Capabilities.ReviseArguments || options.Prompt.Capabilities.SandboxGrants {
-		extraActions++
-	}
-	fixedRows += extraActions
-	if feedback != "" {
-		fixedRows++
-	}
-	viewportRows := max(1, maxRows-fixedRows)
-	clipped := len(body) > viewportRows
-	if clipped {
-		fixedRows++ // stable scroll-position row
-		viewportRows = max(1, maxRows-fixedRows)
-	}
-	maxScroll := max(0, len(body)-viewportRows)
+	actions := enabledPermissionActions(options.Prompt, false)
+	selected, _ := selectedPermissionAction(actions, options.Selected)
+	body, viewportRows, maxScroll, clipped := permissionReviewMetrics(theme, options)
 	start := min(max(0, options.Scroll), maxScroll)
 	end := min(len(body), start+viewportRows)
 	visible := body[start:end]
 
 	rule := strings.Repeat(theme.Border.Top, width)
-	lines := []string{theme.BorderStyle.Render(rule)}
-	lines = append(lines, theme.AccentStyle.Render(theme.Glyphs.Permission+" "+ansi.Truncate(title, max(1, width-2), "")))
+	lines := []string{renderElevatedLine(theme, theme.BorderStyle, rule, width)}
+	lines = append(lines, renderElevatedLine(theme, theme.AccentStyle, theme.Glyphs.Permission+" "+ansi.Truncate(title, max(1, width-2), ""), width))
 	for _, line := range visible {
-		lines = append(lines, theme.TextStyle.Render("  "+ansi.Truncate(line, contentWidth, theme.Glyphs.Ellipsis)))
+		lines = append(lines, renderElevatedLine(theme, theme.TextStyle, "  "+ansi.Truncate(line, contentWidth, theme.Glyphs.Ellipsis), width))
 	}
 	if clipped {
-		scrollKeys := "↑/↓"
+		scrollKeys := "PgUp/PgDown"
 		if theme.Mode.ASCII {
-			scrollKeys = "up/down"
+			scrollKeys = "pgup/pgdown"
 		}
 		position := fmt.Sprintf("review %d-%d of %d%s%s scroll", start+1, end, len(body), separator, scrollKeys)
-		lines = append(lines, theme.MutedStyle.Render("  "+ansi.Truncate(position, contentWidth, "")))
+		lines = append(lines, renderElevatedLine(theme, theme.MutedStyle, "  "+ansi.Truncate(position, contentWidth, ""), width))
 	}
 	if feedback != "" {
-		lines = append(lines, theme.DangerStyle.Render("  "+ansi.Truncate(feedback, contentWidth, "")))
+		lines = append(lines, renderElevatedLine(theme, theme.DangerStyle, "  "+ansi.Truncate(feedback, contentWidth, ""), width))
 	}
-	lines = append(lines, theme.StrongStyle.Render("Do you want to proceed?"))
+	lines = append(lines, renderElevatedLine(theme, theme.StrongStyle, "DECISION", width))
 	if options.Submitting {
-		lines = append(lines, theme.AccentStyle.Render("  submitting decision..."))
+		lines = append(lines, renderElevatedLine(theme, theme.AccentStyle, "  submitting decision...", width))
 	} else {
-		allowLabel := theme.Glyphs.Focus + " [a] Allow once"
-		if !permissionAllows(options.Prompt) {
-			allowLabel = "  [a] Allow once (unavailable)"
+		for _, action := range actions {
+			prefix := "  "
+			style := theme.MutedStyle
+			if action == selected {
+				prefix = theme.Glyphs.Focus + " "
+				style = theme.AccentStyle.Bold(true)
+			}
+			lines = append(lines, renderElevatedLine(theme, style, prefix+permissionActionLabel(action), width))
 		}
-		lines = append(lines, theme.AccentStyle.Render(allowLabel))
 	}
-	lines = append(lines, theme.MutedStyle.Render("  [d] Deny"))
-	if options.Prompt.Capabilities.Remember {
-		remember := "  [A] Allow + remember  [D] Deny + remember"
-		if options.Prompt.RememberScope == "" {
-			remember = "  [A/D] Remember (unavailable: no safe scope)"
-		}
-		lines = append(lines, theme.MutedStyle.Render(ansi.Truncate(remember, contentWidth, theme.Glyphs.Ellipsis)))
-	}
-	var editors []string
-	if options.Prompt.Capabilities.ReviseArguments && options.Prompt.Capabilities.SchemaAwareEdit {
-		editors = append(editors, "[e] edit arguments")
-	}
-	if options.Prompt.Capabilities.SandboxGrants && options.Prompt.GrantOptions.Support == SupportSupported {
-		editors = append(editors, "[s] one-call grants")
-	}
-	if len(editors) > 0 {
-		lines = append(lines, theme.MutedStyle.Render("  "+strings.Join(editors, separator)))
-	}
-	keyHint := "Esc deny" + separator + "↑/↓ review" + separator + "Ctrl+C deny + cancel"
+	keyHint := "↑/↓ select" + separator + "Enter choose" + separator + "PgUp/PgDown review" + separator + "Esc deny"
 	if theme.Mode.ASCII {
-		keyHint = "Esc deny | up/down review | Ctrl+C deny + cancel"
+		keyHint = "up/down select | Enter choose | PgUp/PgDown review | Esc deny"
 	}
-	lines = append(lines, theme.MutedStyle.Render(keyHint))
+	lines = append(lines, renderElevatedLine(theme, theme.MutedStyle, keyHint, width))
 	return lines
+}
+
+func permissionActionLabel(action permissionAction) string {
+	switch action {
+	case permissionActionAllowOnce:
+		return "[a] Allow once"
+	case permissionActionAllowRemember:
+		return "[A] Allow & remember"
+	case permissionActionDenyOnce:
+		return "[d] Deny"
+	case permissionActionDenyRemember:
+		return "[D] Deny & remember"
+	case permissionActionEditArguments:
+		return "[e] Edit arguments"
+	case permissionActionSandboxGrants:
+		return "[s] One-call grants"
+	default:
+		return "Deny"
+	}
 }
 
 func renderPermissionEditorLines(theme Theme, options permissionRenderOptions) []string {
@@ -1294,9 +1399,9 @@ func renderPermissionEditorLines(theme Theme, options permissionRenderOptions) [
 	}
 	rule := strings.Repeat(theme.Border.Top, width)
 	lines := []string{
-		theme.BorderStyle.Render(rule),
-		theme.AccentStyle.Render(theme.Glyphs.Permission + " " + title),
-		theme.MutedStyle.Render("  " + ansi.Truncate(copy, contentWidth, theme.Glyphs.Ellipsis)),
+		renderElevatedLine(theme, theme.BorderStyle, rule, width),
+		renderElevatedLine(theme, theme.AccentStyle, theme.Glyphs.Permission+" "+title, width),
+		renderElevatedLine(theme, theme.MutedStyle, "  "+ansi.Truncate(copy, contentWidth, theme.Glyphs.Ellipsis), width),
 	}
 	available := max(1, options.MaxRows-6)
 	editorLines := options.EditorLines
@@ -1304,18 +1409,18 @@ func renderPermissionEditorLines(theme Theme, options permissionRenderOptions) [
 		editorLines = editorLines[len(editorLines)-available:]
 	}
 	for _, line := range editorLines {
-		lines = append(lines, theme.TextStyle.Render("  "+ansi.Truncate(line, contentWidth, theme.Glyphs.Ellipsis)))
+		lines = append(lines, renderElevatedLine(theme, theme.TextStyle, "  "+ansi.Truncate(line, contentWidth, theme.Glyphs.Ellipsis), width))
 	}
 	for len(editorLines) < available {
-		lines = append(lines, "")
+		lines = append(lines, renderElevatedLine(theme, theme.TextStyle, "", width))
 		editorLines = append(editorLines, "")
 	}
 	if options.Feedback != "" {
-		lines = append(lines, theme.DangerStyle.Render("  ! "+ansi.Truncate(SanitizeString(options.Feedback), contentWidth, theme.Glyphs.Ellipsis)))
+		lines = append(lines, renderElevatedLine(theme, theme.DangerStyle, "  ! "+ansi.Truncate(SanitizeString(options.Feedback), contentWidth, theme.Glyphs.Ellipsis), width))
 	} else if options.Submitting {
-		lines = append(lines, theme.AccentStyle.Render("  submitting revision..."))
+		lines = append(lines, renderElevatedLine(theme, theme.AccentStyle, "  submitting revision...", width))
 	}
-	lines = append(lines, theme.MutedStyle.Render("Ctrl+S save · Esc back · Ctrl+C deny + cancel · Ctrl+Q quit"))
+	lines = append(lines, renderElevatedLine(theme, theme.MutedStyle, "Ctrl+S save · Esc back · Ctrl+C deny + cancel · Ctrl+Q quit", width))
 	if len(lines) > options.MaxRows && options.MaxRows > 0 {
 		lines = append(lines[:options.MaxRows-1], lines[len(lines)-1])
 	}

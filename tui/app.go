@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -96,6 +98,7 @@ type permissionState struct {
 	Prompt        PermissionPrompt
 	Submitting    bool
 	Decision      PermissionDecision
+	Selected      permissionAction
 	Feedback      string
 	Scroll        int
 	View          permissionView
@@ -112,6 +115,59 @@ const (
 	permissionArguments
 	permissionGrants
 )
+
+type permissionAction uint8
+
+const (
+	permissionActionUnknown permissionAction = iota
+	permissionActionAllowOnce
+	permissionActionAllowRemember
+	permissionActionDenyOnce
+	permissionActionDenyRemember
+	permissionActionEditArguments
+	permissionActionSandboxGrants
+)
+
+func enabledPermissionActions(prompt PermissionPrompt, tooSmall bool) []permissionAction {
+	if tooSmall {
+		return []permissionAction{permissionActionDenyOnce}
+	}
+	actions := make([]permissionAction, 0, 6)
+	if permissionAllows(prompt) {
+		actions = append(actions, permissionActionAllowOnce)
+		if prompt.Capabilities.Remember && prompt.RememberScope != "" {
+			actions = append(actions, permissionActionAllowRemember)
+		}
+	}
+	if permissionDenies(prompt) {
+		actions = append(actions, permissionActionDenyOnce)
+		if prompt.Capabilities.Remember && prompt.RememberScope != "" {
+			actions = append(actions, permissionActionDenyRemember)
+		}
+	}
+	if prompt.Capabilities.ReviseArguments && prompt.Capabilities.SchemaAwareEdit {
+		actions = append(actions, permissionActionEditArguments)
+	}
+	if prompt.Capabilities.SandboxGrants && prompt.GrantOptions.Support == SupportSupported {
+		actions = append(actions, permissionActionSandboxGrants)
+	}
+	if len(actions) == 0 {
+		return []permissionAction{permissionActionDenyOnce}
+	}
+	return actions
+}
+
+func selectedPermissionAction(actions []permissionAction, selected permissionAction) (permissionAction, int) {
+	for index, action := range actions {
+		if action == selected {
+			return action, index
+		}
+	}
+	if len(actions) == 0 {
+		return permissionActionDenyOnce, 0
+	}
+	return actions[0], 0
+}
 
 // AppModel is the sole owner of frontend state. Run, focus, scroll, mode, and
 // terminal dimensions remain orthogonal so one transition cannot erase the
@@ -202,8 +258,7 @@ func (model *AppModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		model.reconcileTranscriptScroll()
-		model.syncComposerFocus()
-		return model, nil
+		return model, model.syncComposerFocus()
 	case tea.KeyboardEnhancementsMsg:
 		model.enhancedKeyboard = message.SupportsKeyDisambiguation()
 		return model, nil
@@ -306,7 +361,7 @@ func (model *AppModel) permissionEditorCursor() *tea.Cursor {
 	modalBudget := min(transcriptBudget, max(9, transcriptBudget*2/3))
 	modal := renderPermissionLines(model.theme, permissionRenderOptions{
 		Width: model.layout.ContentWidth, MaxRows: modalBudget, Prompt: model.permission.Prompt,
-		Feedback: model.permission.Feedback, View: model.permission.View,
+		Selected: model.permission.Selected, Feedback: model.permission.Feedback, View: model.permission.View,
 		EditorLines: model.permissionEditorLines(), Grants: model.permission.Grants,
 	})
 	modalStart := max(0, transcriptBudget-len(modal))
@@ -482,6 +537,9 @@ func (model *AppModel) applyEvent(event UIEvent) tea.Cmd {
 		if model.permission != nil {
 			return model.protocolFailure(errors.New("permission_requested arrived while another prompt is open"), false)
 		}
+		if model.overlay != nil && model.overlay.Kind != overlayBypass {
+			model.overlay = nil
+		}
 		if err := model.transcript.AwaitPermission(*event.Permission, at); err != nil {
 			return model.protocolFailure(err, false)
 		}
@@ -490,6 +548,10 @@ func (model *AppModel) applyEvent(event UIEvent) tea.Cmd {
 			Prompt: *event.Permission, ArgumentDraft: argumentDraft,
 			GrantDraft: "{\n  \"read_roots\": [],\n  \"write_roots\": [],\n  \"network\": false\n}",
 		}
+		model.permission.Selected, _ = selectedPermissionAction(
+			enabledPermissionActions(model.permission.Prompt, model.layout.Class == LayoutTooSmall),
+			permissionActionUnknown,
+		)
 		model.focus = FocusPermission
 		model.composer.Blur()
 		model.activity = ActivityPermission
@@ -671,6 +733,10 @@ func (model *AppModel) handleModeChanged(message modeChangedMsg) tea.Cmd {
 			model.overlay.Feedback = message.Err.Error()
 			return nil
 		}
+		if model.permission != nil {
+			model.permission.Feedback = "Mode unchanged: " + message.Err.Error()
+			return nil
+		}
 		model.transcript.AddNotice("Mode unchanged: "+message.Err.Error(), model.clock.Now())
 		model.noteLiveOutput()
 		return nil
@@ -678,7 +744,14 @@ func (model *AppModel) handleModeChanged(message modeChangedMsg) tea.Cmd {
 	model.mode = message.Mode
 	model.info.Mode = message.Mode
 	if model.overlay != nil && model.overlay.Kind == overlayBypass {
-		return model.closeOverlay()
+		command := model.closeOverlay()
+		if model.permission != nil {
+			model.permission.Feedback = "Mode changed to " + sessionModeLabel(message.Mode) + "; this request still needs a decision"
+		}
+		return command
+	}
+	if model.permission != nil {
+		model.permission.Feedback = "Mode changed to " + sessionModeLabel(message.Mode) + "; this request still needs a decision"
 	}
 	return nil
 }
@@ -697,7 +770,25 @@ func (model *AppModel) handleKey(message tea.KeyPressMsg) tea.Cmd {
 	if key == "ctrl+q" {
 		return model.beginQuit()
 	}
+	// Ctrl+C is a global run-safety key. Ordinary overlays may consume Escape,
+	// navigation, and confirmation keys, but they must never shadow cancellation.
+	// A live permission keeps its stronger deny-current-plus-cancel behavior even
+	// when the bypass confirmation is layered above it.
+	if key == "ctrl+c" {
+		if model.permission != nil {
+			return model.handlePermissionKey(message, key)
+		}
+		if model.runState == RunRunning || model.runState == RunCancelling {
+			return model.requestCancel()
+		}
+	}
 
+	if model.overlay != nil {
+		return model.handleOverlayKey(message, key)
+	}
+	if key == "shift+tab" && model.permission != nil {
+		return model.cycleMode()
+	}
 	if model.permission != nil {
 		return model.handlePermissionKey(message, key)
 	}
@@ -707,22 +798,13 @@ func (model *AppModel) handleKey(message tea.KeyPressMsg) tea.Cmd {
 	}
 
 	if key == "ctrl+c" {
-		if model.runState == RunRunning || model.runState == RunCancelling {
-			return model.requestCancel()
-		}
 		return model.handleIdleControlC()
-	}
-	if model.overlay != nil {
-		return model.handleOverlayKey(message, key)
 	}
 	if key == "esc" && (model.runState == RunRunning || model.runState == RunCancelling) {
 		return model.requestCancel()
 	}
 	if key == "shift+tab" {
 		return model.cycleMode()
-	}
-	if key == "ctrl+b" {
-		return model.requestBypass()
 	}
 	if key == "ctrl+i" {
 		return model.openOverlay(overlayInspector)
@@ -735,9 +817,7 @@ func (model *AppModel) handleKey(message tea.KeyPressMsg) tea.Cmd {
 }
 
 func (model *AppModel) requestBypass() tea.Cmd {
-	if model.runState != RunIdle {
-		model.transcript.AddNotice("Mode can change only between runs.", model.clock.Now())
-		model.noteLiveOutput()
+	if model.runState != RunIdle && model.runState != RunRunning {
 		return nil
 	}
 	if !model.info.ModeChangeable || model.mode == ModeExternal || model.mode == ModeUnsupported || model.port == nil || model.mode == ModeBypass {
@@ -751,13 +831,16 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 		return nil
 	}
 	if key == "ctrl+c" {
-		model.runState = RunCancelling
-		model.activity = ActivityCancelling
+		if model.permission.Submitting {
+			return model.requestCancel()
+		}
 		// A caller-owned legacy reply path may be live but temporarily unwritable.
 		// Cancellation must not wait behind that reply or the two operations can
 		// deadlock: the reply waits for the run to cancel while cancel waits for
 		// the reply command to return.
-		return tea.Batch(model.submitPermission(DecisionDenyOnce), cancelCmd(model.runCancel))
+		deny := model.submitPermission(DecisionDenyOnce)
+		cancel := model.requestCancel()
+		return tea.Batch(deny, cancel)
 	}
 	if model.permission.Submitting {
 		return nil
@@ -765,24 +848,36 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 	if model.permission.View != permissionDecision {
 		return model.handlePermissionEditorKey(message, key)
 	}
+	actions := enabledPermissionActions(model.permission.Prompt, model.layout.Class == LayoutTooSmall)
+	selected, selectedIndex := selectedPermissionAction(actions, model.permission.Selected)
+	model.permission.Selected = selected
 	switch key {
 	case "up", "k":
-		model.permission.Scroll = max(0, model.permission.Scroll-1)
+		selectedIndex = max(0, selectedIndex-1)
+		model.permission.Selected = actions[selectedIndex]
 		return nil
 	case "down", "j":
-		model.permission.Scroll++
+		selectedIndex = min(len(actions)-1, selectedIndex+1)
+		model.permission.Selected = actions[selectedIndex]
 		return nil
 	case "pgup", "ctrl+u":
-		model.permission.Scroll = max(0, model.permission.Scroll-max(1, model.layout.TranscriptRows/2))
+		page, _ := model.permissionReviewScrollMetrics()
+		model.permission.Scroll = max(0, model.permission.Scroll-page)
 		return nil
 	case "pgdown", "ctrl+d":
-		model.permission.Scroll += max(1, model.layout.TranscriptRows/2)
+		page, maxScroll := model.permissionReviewScrollMetrics()
+		model.permission.Scroll = min(maxScroll, model.permission.Scroll+page)
 		return nil
 	case "home":
 		model.permission.Scroll = 0
 		return nil
+	case "end", "G":
+		_, model.permission.Scroll = model.permissionReviewScrollMetrics()
+		return nil
+	case "enter", " ", "space":
+		return model.activatePermissionAction(model.permission.Selected)
 	case "d", "esc":
-		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionDenyOnce})
+		return model.activatePermissionAction(permissionActionDenyOnce)
 	case "a":
 		if model.layout.Class == LayoutTooSmall {
 			model.permission.Feedback = fmt.Sprintf("resize to at least %dx%d before allowing", MinimumTerminalWidth, MinimumTerminalHeight)
@@ -792,7 +887,7 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 			model.permission.Feedback = "allow is not supported by this request"
 			return nil
 		}
-		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionAllowOnce, Grants: cloneSandboxGrants(model.permission.Grants)})
+		return model.activatePermissionAction(permissionActionAllowOnce)
 	case "A":
 		if model.layout.Class == LayoutTooSmall {
 			model.permission.Feedback = fmt.Sprintf("resize to at least %dx%d before remembering", MinimumTerminalWidth, MinimumTerminalHeight)
@@ -802,7 +897,7 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 			model.permission.Feedback = "remember is unavailable for this action"
 			return nil
 		}
-		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionAllowRemember, Remember: true, Grants: cloneSandboxGrants(model.permission.Grants)})
+		return model.activatePermissionAction(permissionActionAllowRemember)
 	case "D":
 		if model.layout.Class == LayoutTooSmall {
 			model.permission.Feedback = fmt.Sprintf("resize to at least %dx%d before remembering", MinimumTerminalWidth, MinimumTerminalHeight)
@@ -812,7 +907,7 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 			model.permission.Feedback = "remember is unavailable for this action"
 			return nil
 		}
-		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionDenyRemember, Remember: true})
+		return model.activatePermissionAction(permissionActionDenyRemember)
 	case "e":
 		if model.layout.Class == LayoutTooSmall {
 			model.permission.Feedback = fmt.Sprintf("resize to at least %dx%d before editing", MinimumTerminalWidth, MinimumTerminalHeight)
@@ -822,7 +917,7 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 			model.permission.Feedback = "argument revision is unavailable for this request"
 			return nil
 		}
-		return model.openPermissionEditor(permissionArguments)
+		return model.activatePermissionAction(permissionActionEditArguments)
 	case "s":
 		if model.layout.Class == LayoutTooSmall {
 			model.permission.Feedback = fmt.Sprintf("resize to at least %dx%d before editing grants", MinimumTerminalWidth, MinimumTerminalHeight)
@@ -832,6 +927,53 @@ func (model *AppModel) handlePermissionKey(message tea.KeyPressMsg, key string) 
 			model.permission.Feedback = "one-call sandbox grants are unavailable for this request"
 			return nil
 		}
+		return model.activatePermissionAction(permissionActionSandboxGrants)
+	default:
+		return nil
+	}
+}
+
+func (model *AppModel) permissionReviewScrollMetrics() (page, maxScroll int) {
+	if model.permission == nil || model.layout.Class == LayoutTooSmall {
+		return 1, 0
+	}
+	transcriptBudget := max(1, model.layout.Height-2) // header and footer
+	modalBudget := min(transcriptBudget, max(9, transcriptBudget*2/3))
+	_, viewportRows, maxScroll, _ := permissionReviewMetrics(model.theme, permissionRenderOptions{
+		Width: model.layout.ContentWidth, MaxRows: modalBudget, Prompt: model.permission.Prompt,
+		Submitting: model.permission.Submitting, Selected: model.permission.Selected,
+		Feedback: model.permission.Feedback, Scroll: model.permission.Scroll,
+		Grants: model.permission.Grants,
+	})
+	return max(1, viewportRows-1), maxScroll
+}
+
+func (model *AppModel) activatePermissionAction(action permissionAction) tea.Cmd {
+	if model.permission == nil {
+		return nil
+	}
+	if model.layout.Class == LayoutTooSmall && action != permissionActionDenyOnce {
+		model.permission.Feedback = fmt.Sprintf("resize to at least %dx%d before allowing or editing", MinimumTerminalWidth, MinimumTerminalHeight)
+		return nil
+	}
+	actions := enabledPermissionActions(model.permission.Prompt, model.layout.Class == LayoutTooSmall)
+	if _, index := selectedPermissionAction(actions, action); index >= len(actions) || actions[index] != action {
+		model.permission.Feedback = "that decision is unavailable for this request"
+		return nil
+	}
+	model.permission.Selected = action
+	switch action {
+	case permissionActionAllowOnce:
+		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionAllowOnce, Grants: cloneSandboxGrants(model.permission.Grants)})
+	case permissionActionAllowRemember:
+		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionAllowRemember, Remember: true, Grants: cloneSandboxGrants(model.permission.Grants)})
+	case permissionActionDenyOnce:
+		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionDenyOnce})
+	case permissionActionDenyRemember:
+		return model.submitPermissionResponse(PermissionResponse{Decision: DecisionDenyRemember, Remember: true})
+	case permissionActionEditArguments:
+		return model.openPermissionEditor(permissionArguments)
+	case permissionActionSandboxGrants:
 		return model.openPermissionEditor(permissionGrants)
 	default:
 		return nil
@@ -858,6 +1000,11 @@ func permissionAllows(prompt PermissionPrompt) bool {
 	// Hand-authored legacy reducer fixtures predate capability flags. Preserve
 	// their allow/deny-only behavior without fabricating richer controls.
 	return capabilities.Allow || capabilities == (PermissionCapabilities{})
+}
+
+func permissionDenies(prompt PermissionPrompt) bool {
+	capabilities := prompt.Capabilities
+	return capabilities.Deny || capabilities == (PermissionCapabilities{})
 }
 
 func cloneSandboxGrants(grants SandboxGrants) SandboxGrants {
@@ -1006,9 +1153,7 @@ func (model *AppModel) submitDraft() tea.Cmd {
 }
 
 func (model *AppModel) cycleMode() tea.Cmd {
-	if model.runState != RunIdle {
-		model.transcript.AddNotice("Mode can change only between runs.", model.clock.Now())
-		model.noteLiveOutput()
+	if model.runState != RunIdle && model.runState != RunRunning {
 		return nil
 	}
 	if !model.info.ModeChangeable || model.mode == ModeExternal || model.mode == ModeUnsupported || model.modeChangePending || model.port == nil {
@@ -1021,7 +1166,7 @@ func (model *AppModel) cycleMode() tea.Cmd {
 	case ModeAutoAcceptEdits:
 		next = ModePlan
 	case ModePlan:
-		next = ModeDefault
+		next = ModeBypass
 	case ModeBypass:
 		next = ModeDefault
 	}
@@ -1140,9 +1285,7 @@ func (model *AppModel) syncComposerFocus() tea.Cmd {
 }
 
 func (model *AppModel) composerCursorRow() int {
-	// Header, transcript viewport, quiet separator, then the composer's top
-	// hairline precede the textarea's first content row.
-	return model.currentTranscriptRows() + 3
+	return model.layout.Height - model.composerHeight(model.layout.ContentWidth)
 }
 
 func (model *AppModel) render() string {
@@ -1156,15 +1299,11 @@ func (model *AppModel) render() string {
 	if blockingOverlay {
 		composerRows = 0
 	}
-	fixedRows := 3 + composerRows
-	if !blockingOverlay {
-		fixedRows++ // one quiet row between the narrative and composer
-	}
+	fixedRows := 2 + composerRows
 	transcriptBudget := max(1, model.layout.Height-fixedRows)
 	transcript := model.renderTranscript(width, transcriptBudget)
 	footer := model.renderFooter(width)
 	composer := model.renderComposer(width, composerRows)
-	hints := model.renderHints(width)
 
 	padding := strings.Repeat(" ", model.layout.HorizontalPadding)
 	lines := make([]string, 0, model.layout.Height)
@@ -1172,27 +1311,27 @@ func (model *AppModel) render() string {
 	for _, line := range transcript {
 		lines = append(lines, padding+fitRendered(line, width)+padding)
 	}
-	if len(transcript) > 0 && !blockingOverlay {
-		lines = append(lines, padding+fitRendered("", width)+padding)
-	}
 	if !blockingOverlay {
 		for _, line := range composer {
 			lines = append(lines, padding+fitRendered(line, width)+padding)
 		}
 	}
 	lines = append(lines, padding+fitRendered(footer, width)+padding)
-	lines = append(lines, padding+fitRendered(hints, width)+padding)
 	return strings.Join(lines, "\n")
 }
 
 func (model *AppModel) renderTooSmall() string {
 	width := max(1, model.layout.Width)
+	if model.overlay != nil {
+		return strings.Join(model.renderOverlay(width, max(1, model.layout.Height)), "\n")
+	}
 	if model.permission != nil {
 		return strings.Join(renderPermissionLines(model.theme, permissionRenderOptions{
 			Width:       width,
 			MaxRows:     max(1, model.layout.Height),
 			Prompt:      model.permission.Prompt,
 			Submitting:  model.permission.Submitting,
+			Selected:    model.permission.Selected,
 			Feedback:    model.permission.Feedback,
 			TooSmall:    true,
 			Scroll:      model.permission.Scroll,
@@ -1200,9 +1339,6 @@ func (model *AppModel) renderTooSmall() string {
 			EditorLines: model.permissionEditorLines(),
 			Grants:      model.permission.Grants,
 		}), "\n")
-	}
-	if model.overlay != nil {
-		return strings.Join(model.renderOverlay(width, max(1, model.layout.Height)), "\n")
 	}
 	lines := []string{
 		"CORAGENT · TERMINAL TOO SMALL",
@@ -1221,17 +1357,38 @@ func (model *AppModel) renderTooSmall() string {
 }
 
 func (model *AppModel) renderHeader(width int) string {
-	project := SanitizeString(model.info.Project)
-	if project == "" {
-		project = "project"
+	mark := "◉"
+	if model.theme.Mode.ASCII {
+		mark = "(*)"
 	}
-	prefix := "coragent  "
-	projectWidth := max(0, width-CellWidth(prefix))
-	project = CompressPathForMode(project, projectWidth, model.theme.Mode)
+	hero := model.theme.AccentStyle.Render(mark) + " " + model.theme.StrongStyle.Render("coragent")
+	return ansi.Truncate(hero, width, "")
+}
 
-	line := model.theme.StrongStyle.Render("coragent") + "  " +
-		model.theme.MutedStyle.Render(project)
-	return ansi.Truncate(line, width, "")
+func (model *AppModel) ledgerStatusLabel() string {
+	if model.permission != nil {
+		return "REVIEW"
+	}
+	if model.modeChangePending {
+		return "MODE PENDING"
+	}
+	switch model.runState {
+	case RunBooting:
+		return "STARTING"
+	case RunRunning:
+		if model.activity != "" && model.activity != ActivityIdle {
+			return strings.ToUpper(SanitizeString(string(model.activity)))
+		}
+		return "RUNNING"
+	case RunCancelling:
+		return "CANCELLING"
+	case RunStartupError:
+		return "STARTUP ERROR"
+	case RunQuitting:
+		return "CLOSING"
+	default:
+		return "READY"
+	}
 }
 
 func sessionModeLabel(mode SessionMode) string {
@@ -1252,6 +1409,9 @@ func sessionModeLabel(mode SessionMode) string {
 }
 
 func (model *AppModel) renderTranscript(width, rows int) []string {
+	if model.overlay != nil {
+		return model.renderOverlay(width, rows)
+	}
 	if model.permission != nil {
 		all := model.transcript.RenderRows(model.theme, width, model.frame)
 		permissionWidth := max(1, width)
@@ -1261,6 +1421,7 @@ func (model *AppModel) renderTranscript(width, rows int) []string {
 			MaxRows:     modalBudget,
 			Prompt:      model.permission.Prompt,
 			Submitting:  model.permission.Submitting,
+			Selected:    model.permission.Selected,
 			Feedback:    model.permission.Feedback,
 			Scroll:      model.permission.Scroll,
 			View:        model.permission.View,
@@ -1283,11 +1444,10 @@ func (model *AppModel) renderTranscript(width, rows int) []string {
 		}
 		return visible
 	}
-	if model.overlay != nil {
-		return model.renderOverlay(width, rows)
-	}
-
 	all := model.renderedTranscriptRows(width)
+	if len(all) == 0 {
+		return model.renderStartupHero(width, rows)
+	}
 	top := model.resolvedScrollTop(all, rows)
 	visible := selectTranscriptRows(all, rows, top)
 	bar := renderTranscriptScrollbar(model.theme, len(all), rows, top)
@@ -1296,6 +1456,127 @@ func (model *AppModel) renderTranscript(width, rows int) []string {
 		visible[index] = fitRendered(visible[index], contentWidth) + bar[index]
 	}
 	return visible
+}
+
+// renderStartupHero draws a chip/core ASCII-art graphic centered in the
+// available transcript area. It adapts to three width tiers and falls back to
+// plain text when the terminal is too narrow.
+func (model *AppModel) renderStartupHero(width, rows int) []string {
+	dot := "◉"
+	brand := "c o r a g e n t"
+	if model.theme.Mode.ASCII {
+		dot = "+"
+		brand = "coragent"
+	}
+	accent := model.theme.AccentStyle
+	brandStyle := model.theme.StrongStyle
+
+	switch {
+	case width >= 51:
+		return model.chipHero(width, rows, dot, brand, accent, brandStyle, true)
+	case width >= 37:
+		return model.chipHero(width, rows, dot, brand, accent, brandStyle, false)
+	case width >= 20:
+		return model.minimalHero(width, rows, dot, brand, accent, brandStyle)
+	default:
+		return model.textHero(width, rows, brand, brandStyle)
+	}
+}
+
+// chipHero draws a nested chip package: outer border → chip body → 2×2 core
+// grid → brand name below. doubleBorder selects ╔═╗ vs ╭─╮.
+func (model *AppModel) chipHero(width, rows int, dot, brand string, accent, brandStyle lipgloss.Style, doubleBorder bool) []string {
+	var tl, tr, bl, br, h, v string
+	var itl, itr, ibl, ibr, ih, iv string
+	if doubleBorder {
+		tl, tr, bl, br, h, v = "╔", "╗", "╚", "╝", "═", "║"
+		itl, itr, ibl, ibr, ih, iv = "┌", "┐", "└", "┘", "─", "│"
+	} else {
+		tl, tr, bl, br, h, v = "╭", "╮", "╰", "╯", "─", "│"
+		itl, itr, ibl, ibr, ih, iv = "┌", "┐", "└", "┘", "─", "│"
+	}
+
+	dots := accent.Render(dot)
+	gap := strings.Repeat(" ", max(1, (width-30)/2))
+	gap = gap[:min(len(gap), 5)]
+	coreRow := dots + gap + dots
+	innerPad := 2
+	chipW := CellWidth(coreRow) + innerPad*2
+	chipTop := itl + strings.Repeat(ih, chipW) + itr
+	chipMid1 := iv + strings.Repeat(" ", innerPad) + coreRow + strings.Repeat(" ", innerPad) + iv
+	chipMid2 := iv + strings.Repeat(" ", innerPad) + coreRow + strings.Repeat(" ", innerPad) + iv
+	chipBot := ibl + strings.Repeat(ih, chipW) + ibr
+
+	outerPad := 2
+	outerW := chipW + outerPad*2
+	outerTop := tl + strings.Repeat(h, outerW) + tr
+	outerMid1 := v + strings.Repeat(" ", outerPad) + chipTop + strings.Repeat(" ", outerPad) + v
+	outerMid2 := v + strings.Repeat(" ", outerPad) + chipMid1 + strings.Repeat(" ", outerPad) + v
+	outerMid3 := v + strings.Repeat(" ", outerPad) + chipMid2 + strings.Repeat(" ", outerPad) + v
+	outerMid4 := v + strings.Repeat(" ", outerPad) + chipBot + strings.Repeat(" ", outerPad) + v
+	outerBot := bl + strings.Repeat(h, outerW) + br
+
+	brandLine := brandStyle.Render(brand)
+	if CellWidth(brand) < outerW+2 {
+		brandLine = brandStyle.Render(strings.ReplaceAll(brand, " ", strings.Repeat(" ", (outerW+2-CellWidth(brand))/(len(brand)/2))))
+	}
+
+	hero := []string{outerTop, outerMid1, outerMid2, outerMid3, outerMid4, outerBot, "", brandLine}
+	return centerLines(hero, width, rows)
+}
+
+// minimalHero draws a simpler single-box 2×2 core grid without the outer
+// chip package.
+func (model *AppModel) minimalHero(width, rows int, dot, brand string, accent, brandStyle lipgloss.Style) []string {
+	dots := accent.Render(dot)
+	gap := strings.Repeat(" ", max(1, (width-16)/2))
+	gap = gap[:min(len(gap), 3)]
+	coreRow := dots + gap + dots
+
+	var tl, tr, bl, br, h, v string
+	tl, tr, bl, br, h, v = "╭", "╮", "╰", "╯", "─", "│"
+
+	pad := 2
+	boxW := CellWidth(coreRow) + pad*2
+	boxTop := tl + strings.Repeat(h, boxW) + tr
+	boxMid1 := v + strings.Repeat(" ", pad) + coreRow + strings.Repeat(" ", pad) + v
+	boxMid2 := v + strings.Repeat(" ", pad) + coreRow + strings.Repeat(" ", pad) + v
+	boxBot := bl + strings.Repeat(h, boxW) + br
+
+	brandLine := brandStyle.Render(brand)
+
+	hero := []string{boxTop, boxMid1, boxMid2, boxBot, "", brandLine}
+	return centerLines(hero, width, rows)
+}
+
+// textHero renders a plain centered brand name for very narrow terminals.
+func (model *AppModel) textHero(width, rows int, brand string, brandStyle lipgloss.Style) []string {
+	hero := []string{"", brandStyle.Render(brand)}
+	return centerLines(hero, width, rows)
+}
+
+func centerLines(lines []string, width, rows int) []string {
+	result := make([]string, rows)
+	start := max(0, (rows-len(lines))/2)
+	for i, line := range lines {
+		idx := start + i
+		if idx >= rows {
+			break
+		}
+		textW := ansi.StringWidth(line)
+		if textW >= width {
+			result[idx] = ansi.Truncate(line, width, "")
+		} else {
+			pad := (width - textW) / 2
+			result[idx] = strings.Repeat(" ", pad) + line
+		}
+	}
+	for i := range result {
+		if result[i] == "" {
+			result[i] = strings.Repeat(" ", width)
+		}
+	}
+	return result
 }
 
 func (model *AppModel) permissionEditorLines() []string {
@@ -1307,42 +1588,58 @@ func (model *AppModel) permissionEditorLines() []string {
 
 func (model *AppModel) renderFooter(width int) string {
 	separator := visualSeparator(model.theme)
-	left := ""
-	if model.activity != "" && model.activity != ActivityIdle {
-		left = string(model.activity)
-	}
-	if model.scroll.Mode == ScrollBrowsingHistory {
-		left = "browsing history" + separator + "wheel down live"
-		if model.scroll.Unread > 0 {
-			left += separator + fmt.Sprintf("%d new", model.scroll.Unread)
-		}
-	}
 
+	// Left side: project ● branch ● mode — then activity / browsing status.
+	leftParts := make([]string, 0, 4)
+	dotSep := "  ●  "
+	if model.theme.Mode.ASCII {
+		dotSep = "  *  "
+	}
+	primary := make([]string, 0, 3)
+	if project := SanitizeString(model.info.Project); project != "" {
+		primary = append(primary, filepath.Base(project))
+	}
+	if branch := model.info.Branch; branch != "" {
+		primary = append(primary, model.theme.AccentStyle.Render(branch))
+	}
+	modeLabel := sessionModeLabel(model.mode)
+	modeStyle := model.theme.AccentStyle
+	switch model.mode {
+	case ModeAutoAcceptEdits:
+		modeStyle = model.theme.SuccessStyle
+	case ModePlan:
+		modeStyle = model.theme.InfoStyle
+	case ModeBypass:
+		modeStyle = model.theme.DangerStyle
+	}
+	modeText := modeStyle.Render(modeLabel) + " " + model.theme.MutedStyle.Render("(shift+tab)")
+	primary = append(primary, modeText)
+	if len(primary) > 0 {
+		leftParts = append(leftParts, strings.Join(primary, dotSep))
+	}
+	if model.activity != "" && model.activity != ActivityIdle {
+		leftParts = append(leftParts, model.theme.InfoStyle.Render(string(model.activity)))
+	}
+	left := strings.Join(leftParts, " " + separator + " ")
+
+	// Right side: sandbox, model, context.
 	sandbox := SanitizeString(model.info.Sandbox)
 	if sandbox == "" {
 		sandbox = "unknown"
 	}
-	meta := []string{"[" + sessionModeLabel(model.mode) + "]", "sandbox " + sandbox}
+	meta := []string{"sandbox " + sandbox}
 	if model.layout.ShowModel && model.info.Model != "" {
 		meta = append(meta, SanitizeString(model.info.Model))
 	}
 	contextLabel, contextLevel := model.contextUsageLabel()
 	meta = append(meta, contextLabel)
 
-	for len(meta) > 2 && CellWidth(strings.Join(meta, separator))+CellWidth(left)+1 > width {
+	leftPlain := strings.Join(leftParts, " "+separator+" ")
+	for len(meta) > 1 && CellWidth(strings.Join(meta, separator))+CellWidth(leftPlain)+2 > width {
 		meta = meta[:len(meta)-1]
 	}
-	rightPlain := strings.Join(meta, separator)
-	if CellWidth(left)+CellWidth(rightPlain)+1 > width {
-		left = ""
-	}
-
-	modeStyle := model.theme.AccentStyle
-	if model.mode == ModeBypass {
-		modeStyle = model.theme.DangerStyle
-	}
-	right := modeStyle.Render(meta[0])
-	for index := 1; index < len(meta); index++ {
+	right := ""
+	for index := range meta {
 		style := model.theme.MutedStyle
 		if meta[index] == contextLabel {
 			switch contextLevel {
@@ -1352,33 +1649,60 @@ func (model *AppModel) renderFooter(width int) string {
 				style = model.theme.WarningStyle
 			}
 		}
-		right += style.Render(separator + meta[index])
+		if index > 0 {
+			right += model.theme.MutedStyle.Render(separator)
+		}
+		right += style.Render(meta[index])
 	}
-	space := max(0, width-CellWidth(left)-CellWidth(rightPlain))
-	line := model.theme.AccentStyle.Render(left) + strings.Repeat(" ", space) + right
+
+	rightPlain := strings.Join(meta, separator)
+	space := max(1, width-CellWidth(leftPlain)-CellWidth(rightPlain))
+	line := left + strings.Repeat(" ", space) + right
 	return ansi.Truncate(line, width, "")
 }
 
 func (model *AppModel) contextUsageLabel() (string, int) {
 	if model.usage == nil {
-		return "ctx unknown", 0
+		return "0%", 0
 	}
 	usage := model.usage
+	tokens := formatTokenCount(usage.Used)
 	source := ""
 	if usage.Source == "estimated" {
 		source = " est"
 	}
-	if !usage.Window.Known || usage.Window.Value == 0 {
-		return fmt.Sprintf("ctx %s%s", formatTokenCount(usage.Used), source), 0
+	window := usage.Window.Value
+	if !usage.Window.Known || window == 0 {
+		window = uint64(modelWindow(model.info.Model))
+		if window == 0 {
+			return tokens + source, 0
+		}
 	}
-	percent := usage.Used * 100 / usage.Window.Value
+	ratio := float64(usage.Used) / float64(window)
+	percent := int(ratio * 100)
+	pctStr := fmt.Sprintf("%d%%", percent)
+	if ratio < 0.1 && ratio > 0 {
+		pctStr = fmt.Sprintf("%.1f%%", ratio*100)
+	}
 	level := 0
 	if percent >= 95 {
 		level = 2
 	} else if percent >= 80 {
 		level = 1
 	}
-	return fmt.Sprintf("ctx %d%%%s", percent, source), level
+	return fmt.Sprintf("%s · %s%s", pctStr, tokens, source), level
+}
+
+func modelWindow(model string) int {
+	if strings.HasSuffix(model, "[1m]") {
+		return 1_000_000
+	}
+	// When model name is reported by the provider (not from config), it won't
+	// carry the suffix. Default to the standard 200K assumption.
+	if model != "" {
+		return 200_000
+	}
+	return 0
 }
 
 func formatTokenCount(value uint64) string {
@@ -1444,33 +1768,6 @@ func (model *AppModel) renderComposer(width, rows int) []string {
 	}
 	lines = append(lines, borderStyle.Render(rule))
 	return lines
-}
-
-func (model *AppModel) renderHints(width int) string {
-	var hints string
-	switch {
-	case model.permission != nil:
-		hints = "Ctrl+Q quit"
-	case model.overlay != nil:
-		hints = "Esc close overlay · Ctrl+Q quit"
-	case model.runState == RunRunning || model.runState == RunCancelling:
-		hints = "Esc interrupt · Ctrl+C cancel · Ctrl+I inspect · Ctrl+/ help · wheel history · drag copy"
-	case !model.quitArmedAt.IsZero():
-		hints = "Ctrl+C again to quit · Ctrl+Q quit"
-	default:
-		newline := "Ctrl+J newline"
-		if model.enhancedKeyboard {
-			newline = "Ctrl+J/Shift+Enter newline"
-		}
-		hints = "Enter send · " + newline + " · Shift+Tab mode · Ctrl+/ help · Ctrl+I inspect · wheel history · drag auto-copy · Shift/Option+drag fallback"
-	}
-	if model.layout.Class == LayoutMinimal && model.permission == nil && model.focus == FocusComposer && model.runState == RunIdle {
-		hints = "wheel history · drag copy · Enter send"
-	}
-	if model.theme.Mode.ASCII {
-		hints = strings.ReplaceAll(hints, " · ", " | ")
-	}
-	return model.theme.MutedStyle.Render(ansi.Truncate(hints, width, ""))
 }
 
 func selectTranscriptRows(lines []RenderedTranscriptLine, rows, top int) []string {

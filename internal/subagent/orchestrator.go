@@ -116,6 +116,40 @@ func (*TaskHandler) RunsCommands() bool { return false }
 // plan mode. Mutating child tools still receive their own permission decision.
 func (*TaskHandler) ActionKind() core.ActionKind { return core.ActionRead }
 
+// PreviewAction resolves the child capability ceiling without constructing a
+// child runtime or starting the provider. The instruction is deliberately shown
+// as a bounded summary; the effective arguments on the prepared event retain the
+// authoritative full value for detailed review.
+func (h *TaskHandler) PreviewAction(_ context.Context, args map[string]interface{}) (core.ActionPreview, error) {
+	request, err := parseRequest(args)
+	if err != nil {
+		return core.ActionPreview{}, err
+	}
+	if h == nil || h.blueprint == nil || h.blueprint.catalog == nil {
+		return core.ActionPreview{}, errors.New("task: subagent runtime is unavailable")
+	}
+	childCatalog := h.blueprint.catalog.RestrictedView(h.blueprint.advertised, request.tools)
+	tools := childCatalog.Advertise()
+	names := make([]string, 0, len(tools))
+	for _, descriptor := range tools {
+		names = append(names, descriptor.Name)
+	}
+	toolSummary := strings.Join(names, ", ")
+	if toolSummary == "" {
+		toolSummary = "none"
+	}
+	return core.ActionPreview{
+		Kind:      core.ActionPreviewMetadata,
+		Operation: core.ActionOperationCustom,
+		Summary:   "Delegate task " + request.label,
+		Metadata: map[string]string{
+			"label":               request.label,
+			"instruction_summary": boundedInstructionSummary(request.instruction, 240),
+			"child_tools":         toolSummary,
+		},
+	}, nil
+}
+
 // Execute satisfies core.ToolHandler. The executor normally selects
 // ExecuteWithEvents for this internal handler so lifecycle and permission events
 // can share the parent stream.
@@ -345,6 +379,14 @@ func parseRequest(args map[string]interface{}) (taskRequest, error) {
 	return request, nil
 }
 
+func boundedInstructionSummary(instruction string, limit int) string {
+	runes := []rune(instruction)
+	if limit <= 0 || len(runes) <= limit {
+		return instruction
+	}
+	return string(runes[:limit]) + "…"
+}
+
 func finalAssistant(conv core.Conversation) (string, bool) {
 	if len(conv.Turns) == 0 {
 		return "", false
@@ -372,4 +414,5 @@ func combineErrors(prefix string, primary, cleanup error) error {
 var (
 	_ core.ToolHandler      = (*TaskHandler)(nil)
 	_ core.ActionClassifier = (*TaskHandler)(nil)
+	_ core.ActionPreviewer  = (*TaskHandler)(nil)
 )

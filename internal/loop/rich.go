@@ -31,7 +31,8 @@ func RunRich(ctx context.Context, d Deps, origin core.Origin, emit func(core.Ric
 		state.round = uint64(roundIndex + 1)
 		snap := withTransientContext(d.Context.Snapshot(), d.TransientContext)
 		estimate := contextmanager.EstimateRequestTokens(snap, d.Tools, d.StreamOptions)
-		estimatedUsage := contextmanager.UsageSnapshot(state.round, core.ContextUsageEstimated, time.Now(), estimate, 0)
+		modelWindow := core.ModelContextWindow(d.StreamOptions.Model)
+			estimatedUsage := contextmanager.UsageSnapshot(state.round, core.ContextUsageEstimated, time.Now(), estimate, modelWindow)
 		if err := state.fact(core.ObservedKindContextUsageUpdated, &core.ContextUsageUpdatedPayload{Usage: estimatedUsage}, nil); err != nil {
 			return core.RunFinished{Reason: core.StopCancelled}
 		}

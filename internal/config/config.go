@@ -30,9 +30,10 @@ type Settings struct {
 	Sandbox *SandboxSettings `json:"sandbox,omitempty"`
 }
 
-// PermissionSettings configures the permission engine. Each allow/deny entry is a
-// "<kind>:<match>" string (e.g. "command:git status", "edit:/path"), so typed
-// rules live in a flat JSON list.
+// PermissionSettings configures the permission engine. Each allow/deny entry is
+// either a legacy "<kind>:<match>" family rule or a versioned keyed exact-call
+// fingerprint, so typed rules live in a flat JSON list without persisting exact
+// arguments or fingerprint key material.
 type PermissionSettings struct {
 	// Mode is the starting mode: default, auto-accept-edits, plan, or bypass.
 	Mode string `json:"mode,omitempty"`
@@ -112,10 +113,15 @@ func Defaults() Settings {
 	}
 }
 
-// Load discovers and loads settings from home and project directories.
-// Project settings override home settings field-by-field.
+// Load discovers and loads settings from home and project directories. Before
+// resolution it atomically scrubs unsafe legacy exact-call selectors from both
+// raw files without expanding environment placeholders. Project settings
+// override home settings field-by-field.
 // If neither file exists, returns documented defaults.
 func Load() (Settings, error) {
+	if err := ScrubLegacyExactPermissionRules(); err != nil {
+		return Settings{}, err
+	}
 	homeSettings, homeErr := loadHomeSettings()
 	projectSettings, projectErr := loadProjectSettings()
 
@@ -151,11 +157,10 @@ func LoadFrom(s Settings) Settings {
 
 // loadHomeSettings loads from ~/.coragent/settings.json
 func loadHomeSettings() (Settings, error) {
-	home, err := os.UserHomeDir()
+	path, err := HomeSettingsPath()
 	if err != nil {
-		return Settings{}, fmt.Errorf("cannot determine home directory: %w", err)
+		return Settings{}, err
 	}
-	path := filepath.Join(home, ".coragent", "settings.json")
 	return loadFromFile(path)
 }
 
@@ -171,44 +176,12 @@ func ProjectSettingsPath() string {
 }
 
 // AppendPermissionRule durably records a remembered rule by read-modify-write of
-// the settings file at path: it loads the current file (treating a missing file
-// as empty), appends the "<kind>:<match>" rule to the allow or deny list, and
-// writes the whole struct back so unrelated settings are preserved. Parent
-// directories are created as needed.
+// the raw settings file at path: it treats a missing file as empty, scrubs unsafe
+// legacy exact selectors, appends the family rule or keyed fingerprint, and
+// atomically writes the raw JSON back without resolving placeholders or dropping
+// unknown fields. Parent directories are created as needed.
 func AppendPermissionRule(path string, allow bool, rule string) error {
-	var settings Settings
-	data, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if jerr := json.Unmarshal(data, &settings); jerr != nil {
-			return fmt.Errorf("failed to parse %s: %w", path, jerr)
-		}
-	case os.IsNotExist(err):
-		// Fresh file: start from an empty struct.
-	default:
-		return fmt.Errorf("failed to read %s: %w", path, err)
-	}
-
-	if settings.Permission == nil {
-		settings.Permission = &PermissionSettings{}
-	}
-	if allow {
-		settings.Permission.Allow = append(settings.Permission.Allow, rule)
-	} else {
-		settings.Permission.Deny = append(settings.Permission.Deny, rule)
-	}
-
-	out, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to encode settings: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("failed to create settings directory: %w", err)
-	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return fmt.Errorf("failed to write %s: %w", path, err)
-	}
-	return nil
+	return appendPermissionRuleRaw(path, allow, rule)
 }
 
 // loadFromFile loads and validates settings from a specific file path

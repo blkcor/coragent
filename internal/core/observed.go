@@ -578,10 +578,25 @@ type PermissionCapabilities struct {
 	SandboxGrants   bool
 }
 
-// RememberedRuleScope is the safe generalized rule shown before remembering.
+// RememberedRuleScopeKind distinguishes a human-readable family rule from an
+// exact-call fingerprint. Exact scopes never expose the persisted digest or the
+// call's argument contents.
+type RememberedRuleScopeKind string
+
+const (
+	RememberedRuleScopeFamily RememberedRuleScopeKind = "family"
+	RememberedRuleScopeExact  RememberedRuleScopeKind = "exact"
+)
+
+// RememberedRuleScope is the safe scope shown before remembering. Match is kept
+// for compatibility with family-rule frontends; Display is the preferred safe
+// label and never contains an exact-call fingerprint.
 type RememberedRuleScope struct {
-	Kind  ActionKind
-	Match string
+	Kind      ActionKind
+	Match     string
+	ScopeKind RememberedRuleScopeKind
+	ToolName  string
+	Display   string
 }
 
 // ObservedPermissionRequest contains only the current effective revision. The
@@ -837,7 +852,7 @@ func NewLegacyObservedPermissionRequest(requestID RequestID, callID CallID, requ
 // run ends, a retained request cannot claim that a late reply was accepted.
 func NewLegacyObservedPermissionRequestWithContext(runCtx context.Context, requestID RequestID, callID CallID, request PermissionRequest) ObservedPermissionRequest {
 	available := request.ReplyPath != nil
-	rememberedScope := parseLegacyRememberedScope(request.RememberedRule)
+	rememberedScope := parseLegacyRememberedScope(request.RememberedRule, request.ToolCall)
 	capabilities := PermissionCapabilities{Allow: available, Deny: available}
 	capabilities.Remember = available && rememberedScope != nil
 	if runCtx == nil {
@@ -926,7 +941,36 @@ func (operation *permissionReplyOperation) reply(ctx context.Context, decision O
 	}
 }
 
-func parseLegacyRememberedScope(rule string) *RememberedRuleScope {
+func parseLegacyRememberedScope(rule string, call ToolCall) *RememberedRuleScope {
+	if strings.HasPrefix(rule, "exact-v2:") {
+		parts := strings.Split(rule, ":")
+		if len(parts) != 4 || parts[0] != "exact-v2" || parts[2] != "hmac-sha256" || len(parts[3]) != 64 {
+			return nil
+		}
+		for _, char := range parts[3] {
+			if !strings.ContainsRune("0123456789abcdef", char) {
+				return nil
+			}
+		}
+		var action ActionKind
+		switch parts[1] {
+		case "read":
+			action = ActionRead
+		case "edit":
+			action = ActionEdit
+		case "command":
+			action = ActionCommand
+		case "unknown":
+			action = ActionUnknown
+		default:
+			return nil
+		}
+		display := "exact " + call.ToolName + " call"
+		return &RememberedRuleScope{
+			Kind: action, Match: display, ScopeKind: RememberedRuleScopeExact,
+			ToolName: call.ToolName, Display: display,
+		}
+	}
 	kind, match, ok := strings.Cut(rule, ":")
 	match = strings.TrimSpace(match)
 	if !ok || match == "" {
@@ -946,7 +990,7 @@ func parseLegacyRememberedScope(rule string) *RememberedRuleScope {
 	default:
 		return nil
 	}
-	return &RememberedRuleScope{Kind: action, Match: match}
+	return &RememberedRuleScope{Kind: action, Match: match, ScopeKind: RememberedRuleScopeFamily, Display: match}
 }
 
 func rejectedPermissionReply(field, code, message string) PermissionReplyResult {

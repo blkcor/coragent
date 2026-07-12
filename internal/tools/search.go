@@ -40,6 +40,38 @@ func (SearchContent) RunsCommands() bool { return false }
 
 func (SearchContent) ActionKind() core.ActionKind { return core.ActionRead }
 
+// PreviewAction resolves the user-visible search defaults without invoking rg.
+func (SearchContent) PreviewAction(_ context.Context, args map[string]interface{}) (core.ActionPreview, error) {
+	pattern, ok := stringArg(args, "pattern")
+	if !ok || pattern == "" {
+		return core.ActionPreview{}, fmt.Errorf("search_content: pattern is required")
+	}
+	path := "."
+	if value, exists := stringArg(args, "path"); exists && value != "" {
+		path = value
+	}
+	glob := "all files"
+	if value, exists := stringArg(args, "glob"); exists && value != "" {
+		glob = value
+	}
+	caseMode := "case-sensitive"
+	if boolArg(args, "ignore_case") {
+		caseMode = "case-insensitive"
+	}
+	return core.ActionPreview{
+		Kind:      core.ActionPreviewMetadata,
+		Operation: core.ActionOperationCustom,
+		Summary:   "Search content under " + path,
+		Targets:   []string{path},
+		Metadata: map[string]string{
+			"pattern": pattern,
+			"path":    path,
+			"glob":    glob,
+			"case":    caseMode,
+		},
+	}, nil
+}
+
 func (SearchContent) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
 	pattern, ok := stringArg(args, "pattern")
 	if !ok || pattern == "" {
@@ -89,3 +121,5 @@ func (SearchContent) Execute(ctx context.Context, args map[string]interface{}) (
 	}
 	return "", fmt.Errorf("search_content: %w", err)
 }
+
+var _ core.ActionPreviewer = SearchContent{}

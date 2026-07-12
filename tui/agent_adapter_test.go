@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -200,6 +201,87 @@ func TestProjectObservedRichFactsRemainTyped(t *testing.T) {
 				t.Fatalf("projectObservedEvent = %+v, present=%v, err=%v", projected, present, err)
 			}
 			test.check(t, projected)
+		})
+	}
+}
+
+func TestProjectPermissionPromptUsesSafeExactScopeDisplay(t *testing.T) {
+	request := agent.ObservedPermissionRequest{
+		RequestID: "request-exact", CallID: "call-exact", Revision: 1,
+		EffectiveCall: agent.ToolCall{ToolName: "task", Arguments: map[string]interface{}{
+			"instruction": "TOP-SECRET-INSTRUCTION",
+		}},
+		RememberedScope: &agent.RememberedRuleScope{
+			Kind: agent.ActionRead, Match: "compatibility label", ScopeKind: agent.RememberedRuleScopeExact,
+			ToolName: "task", Display: "exact task call",
+		},
+	}
+	prompt, err := projectPermissionPrompt(agent.Origin{AgentID: "root"}, request)
+	if err != nil {
+		t.Fatalf("projectPermissionPrompt: %v", err)
+	}
+	if prompt.RememberScope != "exact task call" || strings.Contains(prompt.RememberScope, "TOP-SECRET") || strings.Contains(prompt.RememberScope, "sha256") {
+		t.Fatalf("projected exact scope = %q", prompt.RememberScope)
+	}
+}
+
+func TestProjectPermissionPromptKeepsArgumentsAndMetadataDetails(t *testing.T) {
+	tests := []struct {
+		name       string
+		tool       string
+		arguments  map[string]interface{}
+		metadata   map[string]string
+		wantAction string
+		wantOrder  []string
+	}{
+		{
+			name: "search content", tool: "search_content",
+			arguments: map[string]interface{}{"pattern": "needle", "path": ".", "glob": "*.go", "ignore_case": true},
+			metadata: map[string]string{
+				"pattern": "needle", "path": ".", "glob": "*.go", "case": "case-insensitive",
+			},
+			wantAction: `"pattern":"needle"`,
+			wantOrder:  []string{"case: case-insensitive", "glob: *.go", "path: .", "pattern: needle"},
+		},
+		{
+			name: "delegated task", tool: "task",
+			arguments: map[string]interface{}{"label": "audit", "instruction": "review permission safety"},
+			metadata: map[string]string{
+				"label": "audit", "instruction_summary": "review permission safety", "child_tools": "read_file, search_content",
+			},
+			wantAction: `"instruction":"review permission safety"`,
+			wantOrder:  []string{"child_tools: read_file, search_content", "instruction_summary: review permission safety", "label: audit"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := agent.ObservedPermissionRequest{
+				RequestID: "request-metadata", CallID: "call-metadata", Revision: 1,
+				EffectiveCall: agent.ToolCall{ToolName: test.tool, Arguments: test.arguments},
+				Preview: agent.ActionPreview{
+					Kind: agent.ActionPreviewMetadata, Operation: agent.ActionOperationCustom,
+					Summary: "concise summary", Metadata: test.metadata,
+					Omission: &agent.Omission{Kind: agent.OmissionPreviewBudget, Scope: agent.OmissionScopeActionPreview},
+				},
+			}
+			prompt, err := projectPermissionPrompt(agent.Origin{AgentID: "root"}, request)
+			if err != nil {
+				t.Fatalf("projectPermissionPrompt: %v", err)
+			}
+			if !strings.Contains(prompt.Action, test.tool) || !strings.Contains(prompt.Action, test.wantAction) {
+				t.Fatalf("ACTION lost effective tool arguments: %q", prompt.Action)
+			}
+			last := -1
+			for _, detail := range test.wantOrder {
+				index := strings.Index(prompt.Preview, detail)
+				if index < 0 || index <= last {
+					t.Fatalf("metadata detail %q missing or out of order in %q", detail, prompt.Preview)
+				}
+				last = index
+			}
+			if !strings.Contains(prompt.Preview, "preview incomplete") {
+				t.Fatalf("metadata omission was hidden: %q", prompt.Preview)
+			}
 		})
 	}
 }
