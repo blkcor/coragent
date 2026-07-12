@@ -151,7 +151,7 @@ func runTools() int {
 		fmt.Fprintf(os.Stderr, "make workspace: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(work)
+	defer func() { _ = os.RemoveAll(work) }()
 	file := filepath.Join(work, "notes.txt")
 
 	steps := []struct {

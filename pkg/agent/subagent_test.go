@@ -83,6 +83,26 @@ func TestDefaultSessionDelegatesWithIsolatedContextAndResultOnly(t *testing.T) {
 	}
 }
 
+func TestLegacySessionDelegationKeepsRequiredProviderProtocol(t *testing.T) {
+	script := newSessionScriptProvider(
+		providerStep{calls: []agent.ToolCall{taskCall("task-1", "child", "answer", nil)}},
+		providerStep{text: []string{"child answer"}},
+		providerStep{text: []string{"root answer"}},
+	)
+	provider := &dualSessionScriptProvider{sessionScriptProvider: script}
+	session := agent.NewSession(agent.SessionConfig{Provider: provider, PermissionMode: "bypass"})
+	events := drain(t, mustRun(t, session, "delegate"))
+	if terminal := events[len(events)-1].RunFinished; terminal == nil || terminal.Reason != agent.StopCompleted {
+		t.Fatalf("legacy delegated run terminal = %+v", terminal)
+	}
+	if provider.richCalls != 0 {
+		t.Fatalf("legacy delegated run selected rich provider %d time(s)", provider.richCalls)
+	}
+	if records := script.recordsSnapshot(); len(records) != 3 {
+		t.Fatalf("legacy provider calls = %d, want root + child + root", len(records))
+	}
+}
+
 func TestChildPermissionRequestReachesParentFrontend(t *testing.T) {
 	dir := t.TempDir()
 	target := dir + "/child.txt"
@@ -277,6 +297,18 @@ type sessionScriptProvider struct {
 	blockStopped chan struct{}
 	startOnce    sync.Once
 	stopOnce     sync.Once
+}
+
+type dualSessionScriptProvider struct {
+	*sessionScriptProvider
+	richCalls int
+}
+
+func (provider *dualSessionScriptProvider) StreamRichReply(context.Context, agent.Conversation, []agent.Tool, agent.StreamOptions) <-chan agent.RichProviderEvent {
+	provider.richCalls++
+	stream := make(chan agent.RichProviderEvent)
+	close(stream)
+	return stream
 }
 
 func newSessionScriptProvider(steps ...providerStep) *sessionScriptProvider {

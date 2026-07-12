@@ -11,7 +11,9 @@
 package context
 
 import (
+	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/blkcor/coragent/internal/core"
 )
@@ -109,6 +111,51 @@ func (m *Manager) EstimateTokens() int {
 		}
 	}
 	return chars / charsPerTokenEstimate
+}
+
+// EstimateRequestTokens estimates the effective assembled provider request,
+// including durable/transient conversation, role and tool-call framing,
+// advertised tool descriptors and schemas, and request options visible to the
+// harness. encoding/json provides a deterministic map-key order, so identical
+// effective inputs produce identical estimates.
+func EstimateRequestTokens(conversation core.Conversation, tools []core.Tool, options core.StreamOptions) uint64 {
+	request := struct {
+		Conversation core.Conversation  `json:"conversation"`
+		Tools        []core.Tool        `json:"tools,omitempty"`
+		Options      core.StreamOptions `json:"options"`
+	}{
+		Conversation: conversation,
+		Tools:        tools,
+		Options:      options,
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		// All current request fields are JSON-safe. Retain a deterministic,
+		// conservative framing estimate if a future caller supplies an invalid
+		// value through a tool-argument map.
+		encoded = []byte(`{"conversation":"unavailable","tools":"unavailable"}`)
+	}
+	return uint64((len(encoded) + charsPerTokenEstimate - 1) / charsPerTokenEstimate)
+}
+
+// UsageSnapshot constructs one truthful typed snapshot. windowTokens <= 0
+// leaves window and remaining capacity unknown instead of fabricating zero.
+func UsageSnapshot(round uint64, source core.ContextUsageSource, measuredAt time.Time, usedTokens uint64, windowTokens int) core.ContextUsage {
+	usage := core.ContextUsage{
+		Round: round, Source: source, MeasuredAt: measuredAt, UsedTokens: usedTokens,
+	}
+	if windowTokens > 0 {
+		window := uint64(windowTokens)
+		usage.WindowTokens = core.OptionalUint64{Known: true, Value: window}
+		usage.RemainingTokens.Known = true
+		if usedTokens >= window {
+			usage.OverBudget = usedTokens > window
+			usage.RemainingTokens.Value = 0
+		} else {
+			usage.RemainingTokens.Value = window - usedTokens
+		}
+	}
+	return usage
 }
 
 // cloneTurn deep-copies a turn, including nested tool calls, tool results, and

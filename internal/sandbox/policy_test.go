@@ -4,7 +4,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"testing"
 )
 
@@ -99,7 +98,11 @@ func TestDerivePolicyAllowsActiveGoToolchain(t *testing.T) {
 	if err != nil {
 		t.Skip("go executable unavailable")
 	}
-	for _, path := range []string{goPath, runtime.GOROOT()} {
+	paths := []string{goPath}
+	if goroot := discoverGoRoot(); goroot != "" {
+		paths = append(paths, goroot)
+	}
+	for _, path := range paths {
 		if !p.CanRead(path) {
 			t.Fatalf("active Go tooling path should be readable by default: %s", path)
 		}

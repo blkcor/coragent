@@ -27,6 +27,63 @@ type ToolHandler interface {
 	RunsCommands() bool
 }
 
+// PreparedAction is a side-effect-free candidate derived from validated
+// effective arguments. CommitToken is opaque to the executor and frontend; only
+// the handler that prepared it may interpret and commit it.
+type PreparedAction struct {
+	EffectiveArguments map[string]interface{}
+	Operation          ActionOperation
+	Preview            ActionPreview
+	CommitToken        interface{}
+}
+
+// Clone returns a frontend-safe independent copy. The opaque commit token is
+// intentionally retained only for the in-process executor path.
+func (a PreparedAction) Clone() PreparedAction {
+	out := a
+	out.EffectiveArguments = clonePreparedArguments(a.EffectiveArguments)
+	out.Preview = a.Preview.Clone()
+	return out
+}
+
+// PreparedActionHandler is an optional additive tool contract. Prepare must be
+// cancellable and side-effect-free. ExecutePrepared must commit only the exact
+// identity-bound candidate represented by the supplied token and fail closed if
+// its preconditions are stale or unsupported.
+type PreparedActionHandler interface {
+	ToolHandler
+	Prepare(ctx context.Context, args map[string]interface{}) (PreparedAction, error)
+	ExecutePrepared(ctx context.Context, prepared PreparedAction) (string, error)
+}
+
+func clonePreparedArguments(arguments map[string]interface{}) map[string]interface{} {
+	if arguments == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(arguments))
+	for key, value := range arguments {
+		switch typed := value.(type) {
+		case map[string]interface{}:
+			out[key] = clonePreparedArguments(typed)
+		case []interface{}:
+			items := make([]interface{}, len(typed))
+			for index, item := range typed {
+				if nested, ok := item.(map[string]interface{}); ok {
+					items[index] = clonePreparedArguments(nested)
+				} else {
+					items[index] = item
+				}
+			}
+			out[key] = items
+		case []string:
+			out[key] = append([]string(nil), typed...)
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
 // CommandSpec describes one shell process a command-running tool wants to
 // launch. The sandbox owns process creation; the handler retains argument
 // validation and result post-processing around the runner call.
@@ -135,6 +192,40 @@ type PreToolCheck interface {
 // drains, so a real prompt can reach the human and block on a reply.
 type Permission interface {
 	Decide(ctx context.Context, call ToolCall, kind ActionKind, emit func(RunEvent) error) PermissionResult
+}
+
+// RichPermissionInput binds one request to the currently prepared effective
+// call and preview. ValidateReply performs schema and grant validation without
+// side effects; validation feedback leaves the request open.
+type RichPermissionInput struct {
+	RunContext      context.Context
+	RequestID       RequestID
+	CallID          CallID
+	Revision        PreviewRevision
+	Origin          Origin
+	EffectiveCall   ToolCall
+	Explanation     string
+	Action          ActionKind
+	Preview         ActionPreview
+	RememberedScope *RememberedRuleScope
+	GrantOptions    SandboxGrantOptions
+	Mode            string
+	ValidateReply   func(ObservedPermissionDecision) []PermissionReplyFeedback
+}
+
+type RichPermissionResult struct {
+	Action               PermissionReplyAction
+	Reason               string
+	Remember             bool
+	RevisedArguments     map[string]interface{}
+	SandboxGrants        SandboxGrants
+	LegacyEditedApproval bool
+}
+
+// RichPermission is the optional full permission protocol used by observed
+// runs. Permission remains the required legacy compatibility seam.
+type RichPermission interface {
+	DecideRich(ctx context.Context, input RichPermissionInput, emit func(RichEvent) error) RichPermissionResult
 }
 
 // Sandbox is the OS-confinement stage for command execution (Phase 5 arms it).

@@ -8,12 +8,12 @@ import (
 
 // ChatCompletionRequest is the request sent to the OpenAI-compatible endpoint
 type ChatCompletionRequest struct {
-	Model       string           `json:"model"`
-	Messages    []ChatMessage    `json:"messages"`
-	Tools       []ChatTool       `json:"tools,omitempty"`
-	Stream      bool             `json:"stream"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []ChatMessage  `json:"messages"`
+	Tools         []ChatTool     `json:"tools,omitempty"`
+	Stream        bool           `json:"stream"`
+	Temperature   *float64       `json:"temperature,omitempty"`
+	MaxTokens     *int           `json:"max_tokens,omitempty"`
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 }
 
@@ -24,16 +24,16 @@ type StreamOptions struct {
 
 // ChatMessage represents a message in the conversation
 type ChatMessage struct {
-	Role      string         `json:"role"`
-	Content   *string        `json:"content,omitempty"`
-	ToolCalls []ChatToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
+	Role       string         `json:"role"`
+	Content    *string        `json:"content,omitempty"`
+	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
 // ChatTool describes an available tool
 type ChatTool struct {
-	Type     string              `json:"type"`
-	Function ChatFunctionDef     `json:"function"`
+	Type     string          `json:"type"`
+	Function ChatFunctionDef `json:"function"`
 }
 
 // ChatFunctionDef describes a function tool
@@ -58,9 +58,20 @@ type ChatFunctionCall struct {
 
 // Usage reports token consumption for a request.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            *int                     `json:"prompt_tokens,omitempty"`
+	CompletionTokens        *int                     `json:"completion_tokens,omitempty"`
+	TotalTokens             *int                     `json:"total_tokens,omitempty"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	ContextWindowTokens     *int                     `json:"context_window,omitempty"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens *int `json:"cached_tokens,omitempty"`
+}
+
+type CompletionTokensDetails struct {
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 }
 
 // ChatCompletionResponse is the non-streaming response (not used in streaming mode)
@@ -99,16 +110,20 @@ type ChunkChoice struct {
 
 // ChatMessageDelta represents incremental changes to a message
 type ChatMessageDelta struct {
-	Role      string              `json:"role,omitempty"`
-	Content   *string             `json:"content,omitempty"`
-	ToolCalls []ChatToolCallDelta `json:"tool_calls,omitempty"`
+	Role    string  `json:"role,omitempty"`
+	Content *string `json:"content,omitempty"`
+	// ReasoningSummary is the only reasoning-shaped field this adapter exposes.
+	// It is intentionally explicit and display-safe; raw reasoning fields are
+	// neither declared nor scanned heuristically.
+	ReasoningSummary *string             `json:"reasoning_summary,omitempty"`
+	ToolCalls        []ChatToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // ChatToolCallDelta represents incremental tool call fragments
 type ChatToolCallDelta struct {
-	Index    int                   `json:"index"`
-	ID       string                `json:"id,omitempty"`
-	Type     string                `json:"type,omitempty"`
+	Index    int                    `json:"index"`
+	ID       string                 `json:"id,omitempty"`
+	Type     string                 `json:"type,omitempty"`
 	Function *ChatFunctionCallDelta `json:"function,omitempty"`
 }
 

@@ -45,6 +45,18 @@ func NewOpenAIProvider(baseURL, apiKey, defaultModel string) *OpenAIProvider {
 	}
 }
 
+// ProviderIdentity reports only display-safe identity. Credentials, headers,
+// and endpoint details remain private to the provider.
+func (p *OpenAIProvider) ProviderIdentity() (string, string) {
+	return "openai-compatible", p.defaultModel
+}
+
+// ProviderFeatureSupport reports rich features available through the optional
+// adapter. Fields remain absent when an endpoint does not supply them.
+func (p *OpenAIProvider) ProviderFeatureSupport() (bool, bool, bool) {
+	return true, true, true
+}
+
 // StreamReply implements the Provider interface
 func (p *OpenAIProvider) StreamReply(ctx context.Context, conv core.Conversation, tools []core.Tool, opts core.StreamOptions) <-chan core.RunEvent {
 	events := make(chan core.RunEvent, 10)
@@ -198,7 +210,7 @@ func (p *OpenAIProvider) streamOnce(ctx context.Context, req *ChatCompletionRequ
 	if err != nil {
 		return false, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check for errors
 	if resp.StatusCode != http.StatusOK {

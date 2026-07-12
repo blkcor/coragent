@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/blkcor/coragent/internal/config"
+	"github.com/blkcor/coragent/internal/core"
 	"github.com/blkcor/coragent/internal/executor"
 	"github.com/blkcor/coragent/internal/hooks"
 	"github.com/blkcor/coragent/internal/permission"
@@ -108,11 +110,13 @@ type SessionConfig struct {
 // the agent loop, exposing a single run entry point and a read-only snapshot of
 // history. One run is in flight at a time; a second concurrent start is refused.
 type Session struct {
-	runtime    *sessionrun.Runtime
-	permission *permission.Engine
-	sandbox    SandboxStatus
-	startupErr error
+	runtime     *sessionrun.Runtime
+	permission  *permission.Engine
+	sandbox     SandboxStatus
+	description SessionDescription
+	startupErr  error
 
+	stateMu  sync.Mutex
 	inFlight atomic.Bool
 	closed   atomic.Bool
 }
@@ -172,10 +176,11 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 	}
 
 	return &Session{
-		runtime:    runtime,
-		permission: eng,
-		sandbox:    sandboxStatus,
-		startupErr: startupErr,
+		runtime:     runtime,
+		permission:  eng,
+		sandbox:     sandboxStatus,
+		description: buildSessionDescription(cfg, advertised, sandboxStatus),
+		startupErr:  startupErr,
 	}, nil
 }
 
@@ -276,15 +281,14 @@ func buildSandbox(cfg SessionConfig) (*sandboxpkg.Sandbox, error) {
 // intended to be called between turns. It errors on an unknown mode or when the
 // session was built with a custom Dispatcher (which owns its own permission).
 func (s *Session) SetPermissionMode(mode string) error {
-	if s.permission == nil {
-		return fmt.Errorf("agent: session has no default permission engine (custom Dispatcher in use)")
+	if s.inFlight.Load() {
+		return ErrPermissionModeChangeInFlight
 	}
 	m, err := permission.ParseMode(mode)
 	if err != nil {
 		return err
 	}
-	s.permission.SetMode(m)
-	return nil
+	return s.SetPermissionModeTyped(publicPermissionMode(m))
 }
 
 // SandboxStatus reports the active command confinement level for sessions using
@@ -299,6 +303,9 @@ func (s *Session) SandboxStatus() SandboxStatus {
 // session is refused with ErrRunInFlight, leaving the first run and history
 // untouched.
 func (s *Session) Run(ctx context.Context, input string) (<-chan RunEvent, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
 	if s.startupErr != nil {
 		return nil, s.startupErr
 	}
@@ -317,17 +324,24 @@ func (s *Session) Run(ctx context.Context, input string) (<-chan RunEvent, error
 		defer close(ch)
 		defer s.inFlight.Store(false)
 
-		emit := func(ev RunEvent) error {
+		_ = s.runtime.RunRich(ctx, input, sessionrun.RichRunOptions{
+			RunID:  RunID(newOpaqueID("run")),
+			Origin: Origin{AgentID: s.description.RootAgentID},
+		}, func(event core.RichEvent) error {
+			if event.Legacy == nil {
+				return nil
+			}
+			if event.Kind == ObservedKindRunFinished {
+				emitTerminal(ctx, ch, *event.Legacy)
+				return nil
+			}
 			select {
-			case ch <- ev:
+			case ch <- *event.Legacy:
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}
-
-		fin := s.runtime.Run(ctx, input, emit)
-		emitTerminal(ctx, ch, RunEvent{Type: RunFinishedEvent, RunFinished: &fin})
+		})
 	}()
 
 	return ch, nil
@@ -354,17 +368,36 @@ func (s *Session) Close(ctx context.Context) error {
 	return s.runtime.Stop(ctx, nil)
 }
 
-// emitTerminal delivers the single terminal RunFinishedEvent. A live reader (even
-// one that just cancelled) receives it; an abandoned reader cannot wedge the
-// goroutine because the channel's one-slot buffer always has room for this final
-// send.
+// emitTerminal delivers the single terminal RunFinishedEvent. During ordinary
+// completion it preserves backpressure and waits for the reader. After
+// cancellation, at most one non-terminal event can occupy the stream's one-slot
+// buffer; that stale pending fact is discarded to reserve the slot for the
+// authoritative terminal. This keeps an abandoned reader from wedging the run
+// while ensuring a later reader never sees a non-terminal event without the
+// terminal that settles it.
 func emitTerminal(ctx context.Context, ch chan RunEvent, ev RunEvent) {
 	select {
 	case ch <- ev:
-	case <-ctx.Done():
-		select {
-		case ch <- ev:
-		default:
-		}
+		return
+	default:
+	}
+
+	if ctx.Err() == nil {
+		ch <- ev
+		return
+	}
+
+	// Cancellation can leave one advisory event buffered after the reader stops.
+	// Drop only that pending non-terminal event; no other producer writes ch.
+	select {
+	case <-ch:
+	default:
+	}
+	select {
+	case ch <- ev:
+	default:
+		// A concurrent live reader may have raced with the drain. Retry as a
+		// blocking send: the buffer is now guaranteed to make progress.
+		ch <- ev
 	}
 }
