@@ -66,6 +66,12 @@ func Bootstrap(settings Settings, opts BootstrapOptions) (*Session, error) {
 	model := resolved.Model
 	baseName := core.ModelBaseName(model.Name)
 	provider := NewOpenAIProvider(model.BaseURL, model.APIKey, baseName)
+	skillUserRoot := ""
+	skillProjectRoot := ""
+	if resolved.SkillRoots != nil {
+		skillUserRoot = resolved.SkillRoots.User
+		skillProjectRoot = resolved.SkillRoots.Project
+	}
 	cfg := SessionConfig{
 		Provider:                 provider,
 		SystemPrompt:             bootstrapSystemPrompt,
@@ -80,6 +86,8 @@ func Bootstrap(settings Settings, opts BootstrapOptions) (*Session, error) {
 		SandboxExtraReadRoots:    append([]string(nil), sandboxReadRoots(resolved)...),
 		SandboxExtraWriteRoots:   append([]string(nil), sandboxWriteRoots(resolved)...),
 		SandboxNetwork:           sandboxNetwork(resolved),
+		SkillRootUser:            skillUserRoot,
+		SkillRootProject:         skillProjectRoot,
 	}
 	return NewSessionWithError(cfg)
 }

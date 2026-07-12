@@ -3,6 +3,7 @@ package agent
 import (
 	"github.com/blkcor/coragent/internal/core"
 	"github.com/blkcor/coragent/internal/sandbox"
+	"github.com/blkcor/coragent/internal/skill"
 )
 
 // This file re-exports the domain vocabulary from internal/core as type aliases.
@@ -173,3 +174,24 @@ const (
 	ConfinementOSEnforced     = sandbox.ConfinementOSEnforced
 	ConfinementPolicyFallback = sandbox.ConfinementPolicyFallback
 )
+
+// SkillInfo is a frontend-safe snapshot of a loaded skill.
+type SkillInfo struct {
+	Name        string
+	Description string
+	Type        string
+	Source      string
+}
+
+// SkillInfoFromInternal converts an internal skill to a public SkillInfo.
+func SkillInfoFromInternal(s *skill.Skill) SkillInfo {
+	if s == nil {
+		return SkillInfo{}
+	}
+	return SkillInfo{
+		Name:        s.Name,
+		Description: s.Description,
+		Type:        s.Type,
+		Source:      string(s.Source),
+	}
+}

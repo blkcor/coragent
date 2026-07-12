@@ -31,6 +31,10 @@ type RichRunOptions struct {
 	Origin          core.Origin
 	Now             func() time.Time
 	UseRichProvider bool
+
+	// ExtraTransientContext is additive harness-provided system context (e.g.,
+	// skill bodies) visible only to this run's provider calls.
+	ExtraTransientContext []string
 }
 
 // Config contains the resolved collaborators and limits for a Runtime. Root
@@ -149,6 +153,8 @@ func (r *Runtime) RunRich(ctx context.Context, input string, options RichRunOpti
 		}
 		transientContext = append(transientContext, prompt.InjectedContext...)
 	}
+
+	transientContext = append(transientContext, options.ExtraTransientContext...)
 
 	r.convo.AppendUser(input)
 	fin := loop.RunRich(ctx, loop.Deps{

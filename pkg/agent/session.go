@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/blkcor/coragent/internal/permission"
 	sandboxpkg "github.com/blkcor/coragent/internal/sandbox"
 	"github.com/blkcor/coragent/internal/sessionrun"
+	"github.com/blkcor/coragent/internal/skill"
 	"github.com/blkcor/coragent/internal/subagent"
 	"github.com/blkcor/coragent/internal/tools"
 )
@@ -114,17 +116,26 @@ type SessionConfig struct {
 	// default is false, so network is denied. Ignored when a custom Dispatcher is
 	// supplied.
 	SandboxNetwork bool
+
+	// SkillRootUser is the path to user-level skills. Empty uses the default
+	// (~/.coragent/skills/). Ignored when a custom Dispatcher is supplied.
+	SkillRootUser string
+
+	// SkillRootProject is the path to project-level skills. Empty uses the default
+	// (.coragent/skills/). Ignored when a custom Dispatcher is supplied.
+	SkillRootProject string
 }
 
 // Session is one agent interaction lifecycle. It owns the conversation and runs
 // the agent loop, exposing a single run entry point and a read-only snapshot of
 // history. One run is in flight at a time; a second concurrent start is refused.
 type Session struct {
-	runtime     *sessionrun.Runtime
-	permission  *permission.Engine
-	sandbox     SandboxStatus
-	description SessionDescription
-	startupErr  error
+	runtime      *sessionrun.Runtime
+	permission   *permission.Engine
+	sandbox      SandboxStatus
+	description  SessionDescription
+	startupErr   error
+	skillReg     *skill.Registry
 
 	stateMu  sync.Mutex
 	inFlight atomic.Bool
@@ -171,7 +182,7 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 		return nil, startErr
 	}
 
-	d, eng, advertised, sandboxStatus, dispatchErr := resolveDispatcher(cfg, hookEngine, maxRounds)
+	d, eng, advertised, sandboxStatus, skillReg, dispatchErr := resolveDispatcher(cfg, hookEngine, maxRounds)
 	runtime.BindExecution(d, advertised)
 	if dispatchErr != nil && strict {
 		return nil, dispatchErr
@@ -189,8 +200,9 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 		runtime:     runtime,
 		permission:  eng,
 		sandbox:     sandboxStatus,
-		description: buildSessionDescription(cfg, advertised, sandboxStatus),
+		description: buildDescription(cfg, advertised, sandboxStatus, skillReg),
 		startupErr:  startupErr,
+		skillReg:    skillReg,
 	}, nil
 }
 
@@ -199,25 +211,25 @@ func newSession(cfg SessionConfig, strict bool) (*Session, error) {
 // with the caller's Tools and no engine. Otherwise the default executor is built
 // over the built-ins plus any custom handlers, with hooks and permission wired
 // into the same ordered chain.
-func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds int) (Dispatcher, *permission.Engine, []Tool, SandboxStatus, error) {
+func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds int) (Dispatcher, *permission.Engine, []Tool, SandboxStatus, *skill.Registry, error) {
 	if cfg.Dispatcher != nil {
-		return cfg.Dispatcher, nil, cfg.Tools, SandboxStatus{}, nil
+		return cfg.Dispatcher, nil, cfg.Tools, SandboxStatus{}, nil, nil
 	}
 	if cfg.PersistRememberedRules {
 		if err := config.ScrubLegacyExactPermissionRules(); err != nil {
-			return nil, nil, nil, SandboxStatus{}, fmt.Errorf("agent: migrate legacy exact permission rules: %w", err)
+			return nil, nil, nil, SandboxStatus{}, nil, fmt.Errorf("agent: migrate legacy exact permission rules: %w", err)
 		}
 	}
 	if cfg.PersistRememberedRules && !cfg.PermissionFingerprintKey.Valid() {
 		loaded, err := config.LoadOrCreatePermissionFingerprintKey()
 		if err != nil {
-			return nil, nil, nil, SandboxStatus{}, fmt.Errorf("agent: load permission fingerprint key: %w", err)
+			return nil, nil, nil, SandboxStatus{}, nil, fmt.Errorf("agent: load permission fingerprint key: %w", err)
 		}
 		material := loaded.ConsumeMaterial()
 		key, err := NewPermissionFingerprintKey(material)
 		clear(material)
 		if err != nil {
-			return nil, nil, nil, SandboxStatus{}, err
+			return nil, nil, nil, SandboxStatus{}, nil, err
 		}
 		cfg.PermissionFingerprintKey = key
 		if loaded.InvalidatesExactRules() {
@@ -225,9 +237,15 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds in
 		}
 	}
 
+	userRoot, projectRoot := skill.RootsFromSettings(cfg.SkillRootUser, cfg.SkillRootProject)
+	skillReg := skill.Load(userRoot, projectRoot)
+
 	catalog := tools.NewDefaultCatalog()
 	for _, h := range cfg.ToolHandlers {
 		catalog.MustRegister(h)
+	}
+	for _, s := range skillReg.List() {
+		catalog.MustRegister(skill.NewHandler(s))
 	}
 	eng := buildEngine(cfg)
 	stages := executor.InertStages()
@@ -238,7 +256,7 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds in
 	stages.Permission = eng
 	sbox, err := buildSandbox(cfg)
 	if err != nil {
-		return nil, nil, nil, SandboxStatus{}, err
+		return nil, nil, nil, SandboxStatus{}, nil, err
 	}
 	stages.Sandbox = sbox
 
@@ -263,7 +281,42 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds in
 	if advertised == nil {
 		advertised = catalog.Advertise()
 	}
-	return executor.New(catalog, stages, 0), eng, advertised, sbox.Status(), nil
+	return executor.New(catalog, stages, 0), eng, advertised, sbox.Status(), skillReg, nil
+}
+
+func buildDescription(cfg SessionConfig, advertised []Tool, sandboxStatus SandboxStatus, skillReg *skill.Registry) SessionDescription {
+	desc := buildSessionDescription(cfg, advertised, sandboxStatus)
+	if skillReg != nil && skillReg.Len() > 0 {
+		desc = patchSkillCapabilities(desc, skillReg)
+	}
+	return desc
+}
+
+func patchSkillCapabilities(desc SessionDescription, reg *skill.Registry) SessionDescription {
+	items := make([]Capability, 0, reg.Len())
+	for _, s := range reg.List() {
+		items = append(items, Capability{
+			Kind:         CapabilityKindSkill,
+			Name:         s.Name,
+			Source:       string(s.Source),
+			Availability: CapabilityAvailabilityAvailable,
+			Detail:       s.Description,
+		})
+	}
+	skillCat := CapabilityCategory{
+		Kind:    CapabilityKindSkill,
+		Support: CapabilitySupportSupported,
+		Source:  "coragent",
+		Items:   items,
+	}
+	for i, cat := range desc.Capabilities {
+		if cat.Kind == CapabilityKindSkill {
+			desc.Capabilities[i] = skillCat
+			return desc
+		}
+	}
+	desc.Capabilities = append(desc.Capabilities, skillCat)
+	return desc
 }
 
 func filterPermissionRulesAfterKeyReset(cfg SessionConfig) SessionConfig {
@@ -360,9 +413,16 @@ func (s *Session) Run(ctx context.Context, input string) (<-chan RunEvent, error
 		defer close(ch)
 		defer s.inFlight.Store(false)
 
-		_ = s.runtime.RunRich(ctx, input, sessionrun.RichRunOptions{
-			RunID:  RunID(newOpaqueID("run")),
-			Origin: Origin{AgentID: s.description.RootAgentID},
+		cleanedInput, skillNames := skill.ParseInvocations(input, s.skillReg)
+		skillBodies := skill.SkillBodies(skillNames, s.skillReg)
+			if len(skillNames) > 0 {
+				slog.Info("skill: invoked via /name", "skills", skillNames)
+			}
+
+		_ = s.runtime.RunRich(ctx, cleanedInput, sessionrun.RichRunOptions{
+			RunID:                 RunID(newOpaqueID("run")),
+			Origin:                Origin{AgentID: s.description.RootAgentID},
+			ExtraTransientContext: skillBodies,
 		}, func(event core.RichEvent) error {
 			if event.Legacy == nil {
 				return nil
@@ -381,6 +441,20 @@ func (s *Session) Run(ctx context.Context, input string) (<-chan RunEvent, error
 	}()
 
 	return ch, nil
+}
+
+// ListSkills returns the loaded skills in registry order. Returns nil when no
+// skills are loaded or the session uses a custom Dispatcher.
+func (s *Session) ListSkills() []SkillInfo {
+	if s.skillReg == nil {
+		return nil
+	}
+	skills := s.skillReg.List()
+	out := make([]SkillInfo, len(skills))
+	for i, sk := range skills {
+		out[i] = SkillInfoFromInternal(sk)
+	}
+	return out
 }
 
 // Conversation returns a deep-copied snapshot of the conversation. Callers can
