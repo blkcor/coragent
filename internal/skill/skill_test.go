@@ -16,7 +16,7 @@ type: project
 
 This is the skill body.
 `
-	s, err := ParseSKILL([]byte(content), "fallback", SourceProject, "test/SKILL.md")
+	s, err := ParseSKILL([]byte(content), "my-skill", SourceProject, "test/SKILL.md")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,12 +60,12 @@ name: minimal
 ---
 Body text.
 `
-	s, err := ParseSKILL([]byte(content), "ignored", SourceUser, "test/SKILL.md")
+	s, err := ParseSKILL([]byte(content), "myskill", SourceUser, "test/SKILL.md")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if s.Name != "minimal" {
-		t.Errorf("expected name 'minimal', got %q", s.Name)
+	if s.Name != "myskill" {
+		t.Errorf("expected directory name 'myskill', got %q", s.Name)
 	}
 	if s.Type != "user" {
 		t.Errorf("expected default type 'user', got %q", s.Type)

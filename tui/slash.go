@@ -9,19 +9,27 @@ import (
 
 // slashSuggestState tracks the active slash-command suggestion dropdown.
 type slashSuggestState struct {
-	active   bool
-	matches  []*slashCommand
-	selected int
+	active    bool
+	matches   []*slashCommand
+	selected  int
+	// suppressed prevents reactivation after Tab completion until the
+	// command word changes or the input no longer starts with "/".
+	suppressed bool
+	lastQuery string
 }
 
 // updateSuggestions recomputes matching slash commands from the composer value.
-// It activates the dropdown when the text starts with "/" and there are matches.
+// It activates the dropdown when the text starts with "/" and there are matches,
+// unless the dropdown was suppressed by a prior Tab completion and the command
+// word has not changed.
 func (s *slashSuggestState) updateSuggestions(reg *slashRegistry, composerValue string) {
 	trimmed := strings.TrimSpace(composerValue)
 	if !strings.HasPrefix(trimmed, "/") {
 		s.active = false
 		s.matches = nil
 		s.selected = 0
+		s.suppressed = false
+		s.lastQuery = ""
 		return
 	}
 
@@ -30,6 +38,17 @@ func (s *slashSuggestState) updateSuggestions(reg *slashRegistry, composerValue 
 	if spaceIdx := strings.Index(query, " "); spaceIdx >= 0 {
 		query = query[:spaceIdx]
 	}
+
+	// After Tab completion the dropdown is suppressed. Only reactivate when
+	// the user edits the command word (e.g. backspaces to change it).
+	if s.suppressed {
+		if query == s.lastQuery {
+			s.active = false
+			return
+		}
+		s.suppressed = false
+	}
+	s.lastQuery = query
 
 	if query == "" {
 		// Show all commands when only "/" is typed.
@@ -64,6 +83,8 @@ type slashCommand struct {
 	Aliases     []string
 	Description string
 	Handler     slashHandler
+	Kind        string // "builtin" or "skill"
+	Source      string // "user" or "project" (only meaningful for skill entries)
 }
 
 type slashRegistry struct {
@@ -89,6 +110,39 @@ func (r *slashRegistry) Register(cmd slashCommand) {
 	for _, alias := range cmd.Aliases {
 		r.commands[alias] = &cmd
 	}
+}
+
+// RegisterSkills adds skill entries to the registry from capability items.
+// Skills that collide with an already-registered name are skipped (built-in
+// commands take precedence). Duplicate calls with the same skill set are
+// idempotent.
+func (r *slashRegistry) RegisterSkills(items []CapabilityItem) {
+	for _, item := range items {
+		name := item.Name
+		if _, exists := r.commands[name]; exists {
+			// Built-in commands take precedence — skip silently.
+			continue
+		}
+		desc := item.Detail
+		if desc == "" {
+			desc = item.Name
+		}
+		cmd := slashCommand{
+			Name:        name,
+			Description: desc,
+			Kind:        "skill",
+			Source:      item.Source,
+			// No Handler — skill commands route to the agent run, not local dispatch.
+		}
+		r.commands[name] = &cmd
+		r.ordered = append(r.ordered, &cmd)
+	}
+}
+
+// Lookup returns the registered command for the given name, or nil if no
+// command matches.
+func (r *slashRegistry) Lookup(name string) *slashCommand {
+	return r.commands[name]
 }
 
 // Dispatch looks up a command by name and invokes its handler. Returns nil if
@@ -126,30 +180,46 @@ func (r *slashRegistry) Commands() []*slashCommand {
 	return r.ordered
 }
 
-// MatchPrefix returns commands whose name or an alias starts with the given
-// prefix (case-insensitive). Results are in registration order.
+// MatchPrefix returns commands whose name or an alias contains the given
+// substring (case-insensitive). Prefix matches appear before other substring
+// matches. Results are otherwise in registration order.
 func (r *slashRegistry) MatchPrefix(prefix string) []*slashCommand {
 	lower := strings.ToLower(prefix)
+	if lower == "" {
+		return r.Commands()
+	}
 	seen := make(map[string]bool)
-	var matches []*slashCommand
+	var prefixMatches, substringMatches []*slashCommand
 	for _, cmd := range r.ordered {
 		if seen[cmd.Name] {
 			continue
 		}
-		if strings.HasPrefix(strings.ToLower(cmd.Name), lower) {
+		nameLower := strings.ToLower(cmd.Name)
+		if strings.HasPrefix(nameLower, lower) {
 			seen[cmd.Name] = true
-			matches = append(matches, cmd)
+			prefixMatches = append(prefixMatches, cmd)
+			continue
+		}
+		if strings.Contains(nameLower, lower) {
+			seen[cmd.Name] = true
+			substringMatches = append(substringMatches, cmd)
 			continue
 		}
 		for _, alias := range cmd.Aliases {
-			if strings.HasPrefix(strings.ToLower(alias), lower) {
+			aliasLower := strings.ToLower(alias)
+			if strings.HasPrefix(aliasLower, lower) {
 				seen[cmd.Name] = true
-				matches = append(matches, cmd)
+				prefixMatches = append(prefixMatches, cmd)
+				break
+			}
+			if strings.Contains(aliasLower, lower) {
+				seen[cmd.Name] = true
+				substringMatches = append(substringMatches, cmd)
 				break
 			}
 		}
 	}
-	return matches
+	return append(prefixMatches, substringMatches...)
 }
 
 // isExitCommand reports whether the given input is an /exit or /quit command.
@@ -166,6 +236,7 @@ func registerCommands(reg *slashRegistry) {
 		Name:        "exit",
 		Aliases:     []string{"quit"},
 		Description: "Quit coragent",
+		Kind:        "builtin",
 		Handler: func(app *AppModel, _ string) tea.Cmd {
 			return app.beginQuit()
 		},
@@ -175,6 +246,7 @@ func registerCommands(reg *slashRegistry) {
 		Name:        "skills",
 		Aliases:     []string{"available-skills"},
 		Description: "List loaded skills",
+		Kind:        "builtin",
 		Handler:     slashSkills,
 	})
 
@@ -182,18 +254,21 @@ func registerCommands(reg *slashRegistry) {
 		Name:        "context",
 		Aliases:     []string{"usage"},
 		Description: "Show context window usage",
+		Kind:        "builtin",
 		Handler:     slashContext,
 	})
 
 	reg.Register(slashCommand{
 		Name:        "mode",
 		Description: "Switch permission mode (default, auto, plan, bypass)",
+		Kind:        "builtin",
 		Handler:     slashMode,
 	})
 
 	reg.Register(slashCommand{
 		Name:        "clear",
 		Description: "Clear the transcript",
+		Kind:        "builtin",
 		Handler: func(app *AppModel, _ string) tea.Cmd {
 			app.transcript = NewTranscriptStore()
 			return nil
@@ -204,6 +279,7 @@ func registerCommands(reg *slashRegistry) {
 		Name:        "help",
 		Aliases:     []string{"?"},
 		Description: "Show available commands",
+		Kind:        "builtin",
 		Handler:     slashHelp,
 	})
 }
@@ -307,7 +383,13 @@ func slashHelp(app *AppModel, _ string) tea.Cmd {
 		app.noteLiveOutput()
 		return nil
 	}
+	addedDivider := false
 	for _, cmd := range cmds {
+		// Insert a divider before the first skill entry.
+		if cmd.Kind == "skill" && !addedDivider {
+			app.transcript.AddNotice("— Skills —", app.clock.Now())
+			addedDivider = true
+		}
 		names := "/" + cmd.Name
 		if len(cmd.Aliases) > 0 {
 			aliasStrs := make([]string, len(cmd.Aliases))

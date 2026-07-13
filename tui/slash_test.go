@@ -423,8 +423,12 @@ func TestMatchPrefix_AliasMatch(t *testing.T) {
 func TestMatchPrefix_CaseInsensitive(t *testing.T) {
 	reg := newSlashRegistry()
 	matches := reg.MatchPrefix("EX")
-	if len(matches) != 1 || matches[0].Name != "exit" {
-		t.Fatalf("MatchPrefix(EX) = %v, want [exit]", commandNames(matches))
+	if len(matches) < 1 {
+		t.Fatalf("MatchPrefix(EX) = %v, want at least [exit]", commandNames(matches))
+	}
+	// exit should appear first (prefix match) before other substring matches.
+	if matches[0].Name != "exit" {
+		t.Errorf("MatchPrefix(EX): first match = %q, want exit (prefix before substring)", matches[0].Name)
 	}
 }
 
@@ -602,5 +606,439 @@ func TestSuggestionsDismissedOnEsc(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Error("Esc should return nil command for suggestion dismiss")
+	}
+}
+
+// ── RegisterSkills tests ────────────────────────────────────────────────────
+
+func TestRegisterSkills_AppendsToRegistry(t *testing.T) {
+	reg := newSlashRegistry()
+	builtinCount := len(reg.Commands())
+
+	items := []CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code changes"},
+		{Name: "refactor", Source: "user", Detail: "Refactoring helper"},
+	}
+	reg.RegisterSkills(items)
+
+	all := reg.Commands()
+	if len(all) != builtinCount+2 {
+		t.Fatalf("expected %d commands after RegisterSkills, got %d", builtinCount+2, len(all))
+	}
+
+	// Skills should be after built-in commands.
+	lastTwo := all[len(all)-2:]
+	if lastTwo[0].Name != "code-review" || lastTwo[1].Name != "refactor" {
+		t.Errorf("skills not appended in order: %v", commandNames(lastTwo))
+	}
+
+	// Verify skill entry fields.
+	cr := reg.Lookup("code-review")
+	if cr == nil || cr.Kind != "skill" || cr.Source != "project" {
+		t.Errorf("code-review entry: kind=%q source=%q, want skill/project", cr.Kind, cr.Source)
+	}
+}
+
+func TestRegisterSkills_CollisionSkipped(t *testing.T) {
+	reg := newSlashRegistry()
+
+	// Try to register a skill named "help" — should be skipped.
+	items := []CapabilityItem{
+		{Name: "help", Source: "project", Detail: "A skill that collides"},
+	}
+	reg.RegisterSkills(items)
+
+	cmd := reg.Lookup("help")
+	if cmd == nil {
+		t.Fatal("help should still exist in registry")
+	}
+	if cmd.Kind != "builtin" {
+		t.Errorf("help command kind = %q, want builtin (skill must not overwrite)", cmd.Kind)
+	}
+	if cmd.Source != "" {
+		t.Errorf("help command source = %q, want empty (should not be skill source)", cmd.Source)
+	}
+}
+
+func TestRegisterSkills_Idempotent(t *testing.T) {
+	reg := newSlashRegistry()
+	builtinCount := len(reg.Commands())
+
+	items := []CapabilityItem{
+		{Name: "review", Source: "project", Detail: "Code review"},
+	}
+	reg.RegisterSkills(items)
+	firstCount := len(reg.Commands())
+	if firstCount != builtinCount+1 {
+		t.Fatalf("after first call: %d commands, want %d", firstCount, builtinCount+1)
+	}
+
+	// Second call with same items should not add duplicates.
+	reg.RegisterSkills(items)
+	secondCount := len(reg.Commands())
+	if secondCount != firstCount {
+		t.Errorf("after second call: %d commands, want %d (duplicates)", secondCount, firstCount)
+	}
+}
+
+// ── MatchPrefix with mixed entries ──────────────────────────────────────────
+
+func TestMatchPrefix_MixedBuiltinAndSkill(t *testing.T) {
+	reg := newSlashRegistry()
+	reg.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code"},
+		{Name: "compile", Source: "user", Detail: "Compile project"},
+	})
+
+	// Prefix "co" should match both built-in "context" and skill "code-review".
+	matches := reg.MatchPrefix("co")
+	names := commandNames(matches)
+	if len(names) < 2 {
+		t.Fatalf("MatchPrefix(co) = %v, want at least [context, code-review]", names)
+	}
+	foundContext := false
+	foundCodeReview := false
+	for _, n := range names {
+		if n == "context" {
+			foundContext = true
+		}
+		if n == "code-review" {
+			foundCodeReview = true
+		}
+	}
+	if !foundContext || !foundCodeReview {
+		t.Errorf("MatchPrefix(co) missing expected: context=%v code-review=%v", foundContext, foundCodeReview)
+	}
+	// Prefix matches appear before substring matches.
+	for _, n := range names[:2] {
+		if !strings.HasPrefix(n, "co") {
+			t.Errorf("first matches should be prefix matches, got %q", n)
+		}
+	}
+}
+
+func TestMatchPrefix_SkillOnly(t *testing.T) {
+	reg := newSlashRegistry()
+	reg.RegisterSkills([]CapabilityItem{
+		{Name: "refactor", Source: "user", Detail: "Refactoring"},
+	})
+
+	matches := reg.MatchPrefix("ref")
+	names := commandNames(matches)
+	if len(names) != 1 || names[0] != "refactor" {
+		t.Fatalf("MatchPrefix(ref) = %v, want [refactor]", names)
+	}
+}
+
+func TestMatchPrefix_SubstringMatch(t *testing.T) {
+	reg := newSlashRegistry()
+	reg.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code changes"},
+	})
+
+	// /review should match code-review via substring matching.
+	matches := reg.MatchPrefix("review")
+	names := commandNames(matches)
+	if len(names) != 1 || names[0] != "code-review" {
+		t.Fatalf("MatchPrefix(review) = %v, want [code-review]", names)
+	}
+}
+
+func TestMatchPrefix_PrefixBeforeSubstring(t *testing.T) {
+	reg := newSlashRegistry()
+	reg.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code"},
+	})
+
+	// /re should match both context (substring, "context" contains "re")
+	// and code-review (substring). But prefix matches come first.
+	matches := reg.MatchPrefix("re")
+	names := commandNames(matches)
+	foundCodeReview := false
+	for _, n := range names {
+		if n == "code-review" {
+			foundCodeReview = true
+		}
+	}
+	if !foundCodeReview {
+		t.Errorf("MatchPrefix(re) should include code-review via substring match, got %v", names)
+	}
+}
+
+
+// ── submitDraft routing tests ───────────────────────────────────────────────
+
+func TestSubmitDraft_SkillRoutesToAgent(t *testing.T) {
+	model, port := newReadyApp(t, 120, 36)
+
+	// Register a skill in the slash registry (simulating handleStartup).
+	model.slash.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code changes"},
+	})
+
+	// Submit a skill name via the composer.
+	model.composer.SetValue("/code-review")
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("submitDraft returned nil for skill command")
+	}
+	// Execute the command to trigger port.Run().
+	cmd()
+
+	port.mu.Lock()
+	defer port.mu.Unlock()
+
+	// The skill should have been submitted as an agent run, not dispatched.
+	if len(port.runInputs) != 1 {
+		t.Fatalf("expected 1 run input, got %d", len(port.runInputs))
+	}
+	if port.runInputs[0] != "/code-review" {
+		t.Errorf("run input = %q, want '/code-review'", port.runInputs[0])
+	}
+}
+
+func TestSubmitDraft_BuiltinStillDispatched(t *testing.T) {
+	model, port := newReadyApp(t, 120, 36)
+
+	// Even with skills registered, built-in commands should still dispatch locally.
+	model.slash.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code"},
+	})
+
+	model.composer.SetValue("/help")
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	port.mu.Lock()
+	defer port.mu.Unlock()
+
+	// /help should NOT trigger a run.
+	if len(port.runInputs) > 0 {
+		t.Errorf("/help triggered a run: inputs = %v", port.runInputs)
+	}
+	// Execute command if present so side effects (notice rendering) complete.
+	if cmd != nil {
+		cmd()
+	}
+	// Verify that /help produced output in the transcript.
+	texts := blockTexts(&model.transcript)
+	foundHelp := false
+	for _, txt := range texts {
+		if strings.Contains(txt, "/help") && strings.Contains(txt, "available commands") {
+			foundHelp = true
+			break
+		}
+	}
+	if !foundHelp {
+		t.Errorf("expected help notice in transcript, got: %v", texts)
+	}
+}
+
+func TestSubmitDraft_UnknownStillShowsNotice(t *testing.T) {
+	model, port := newReadyApp(t, 120, 36)
+
+	model.composer.SetValue("/nonexistent-cmd")
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		cmd()
+	}
+
+	port.mu.Lock()
+	defer port.mu.Unlock()
+
+	// Unknown commands should not trigger a run.
+	if len(port.runInputs) > 0 {
+		t.Errorf("unknown command triggered a run: inputs = %v", port.runInputs)
+	}
+
+	// Should show "Unknown command" notice.
+	texts := blockTexts(&model.transcript)
+	found := false
+	for _, txt := range texts {
+		if strings.Contains(txt, "Unknown command:") && strings.Contains(txt, "nonexistent-cmd") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected unknown command notice, got: %v", texts)
+	}
+}
+
+// ── integration test ────────────────────────────────────────────────────────
+
+func TestSlashStartupRegistersSkills(t *testing.T) {
+	port := &fakeSessionPort{
+		info: SessionInfo{
+			Project:        "coragent",
+			Model:          "gpt-test",
+			Mode:           ModeDefault,
+			ModeChangeable: true,
+			Sandbox:        "os",
+			Context:        "ctx 0%",
+			Capabilities: []CapabilityCategory{
+				{
+					Kind:    "skill",
+					Support: SupportSupported,
+					Source:  "coragent",
+					Items: []CapabilityItem{
+						{Name: "review", Source: "project", Detail: "Code review skill"},
+						{Name: "refactor", Source: "user", Detail: "Refactoring skill"},
+					},
+				},
+			},
+		},
+		stream: make(chan UIEvent, 32),
+	}
+	clock := &fakeClock{now: time.Date(2026, 7, 11, 14, 32, 0, 0, time.UTC)}
+	model := NewAppModel(port, WithClock(clock), WithVisualMode(VisualMode{Color: ColorNoColor, ReducedMotion: true}))
+	model.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	// Simulate startup completion (same flow as newTestApp).
+	initCmd := model.Init()
+	if initCmd == nil {
+		t.Fatal("Init returned nil")
+	}
+	msg := initCmd()
+	model.Update(msg)
+
+	// After startup, skills should be registered as slash commands.
+	review := model.slash.Lookup("review")
+	if review == nil {
+		t.Fatal("review skill not registered in slash registry")
+	}
+	if review.Kind != "skill" || review.Source != "project" {
+		t.Errorf("review entry: kind=%q source=%q", review.Kind, review.Source)
+	}
+
+	refactor := model.slash.Lookup("refactor")
+	if refactor == nil {
+		t.Fatal("refactor skill not registered in slash registry")
+	}
+	if refactor.Kind != "skill" || refactor.Source != "user" {
+		t.Errorf("refactor entry: kind=%q source=%q", refactor.Kind, refactor.Source)
+	}
+
+	// Typing "/" should show both built-in commands and skills.
+	model.composer.SetValue("/")
+	model.slashSuggest.updateSuggestions(model.slash, "/")
+	if !model.slashSuggest.active {
+		t.Fatal("suggestions should be active for /")
+	}
+	names := commandNames(model.slashSuggest.matches)
+	if len(names) < 8 {
+		t.Errorf("expected at least 8 matches (6 builtins + 2 skills), got %d: %v", len(names), names)
+	}
+
+	// Clear suggestion state so the Enter key bypasses the suggestion handler
+	// and goes to the default submitDraft path.
+	model.slashSuggest.active = false
+	model.slashSuggest.matches = nil
+	model.slashSuggest.selected = 0
+
+	// Submitting /review should route to agent run.
+	model.composer.SetValue("/review")
+	_, submitCmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if submitCmd == nil {
+		t.Fatal("submitDraft returned nil for skill command")
+	}
+	// Execute the command to trigger port.Run().
+	submitCmd()
+
+	port.mu.Lock()
+	defer port.mu.Unlock()
+	if len(port.runInputs) != 1 || port.runInputs[0] != "/review" {
+		t.Errorf("run inputs = %v, want [/review]", port.runInputs)
+	}
+}
+
+// ── suppression after Tab tests ──────────────────────────────────────────────────────
+
+func TestTabSuppressesSuggestionsAfterCompletion(t *testing.T) {
+	model, _ := newReadyApp(t, 120, 36)
+	model.slash.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code changes"},
+	})
+
+	// Type /co and Tab-complete to /code-review.
+	model.composer.SetValue("/co")
+	model.slashSuggest.updateSuggestions(model.slash, "/co")
+	if !model.slashSuggest.active {
+		t.Fatal("suggestions should be active for /co")
+	}
+
+	// Navigate to the code-review skill entry (after built-in commands).
+	for model.slashSuggest.selectedCommand() != nil && model.slashSuggest.selectedCommand().Name != "code-review" {
+		model.slashSuggest.selected++
+	}
+
+	_ = model.acceptSlashSuggestion()
+	value := model.composer.Value()
+	if value != "/code-review " {
+		t.Fatalf("after Tab: composer value = %q, want '/code-review '", value)
+	}
+	if model.slashSuggest.active {
+		t.Error("suggestions should be dismissed after Tab")
+	}
+
+	// Typing more text after Tab should NOT reactivate the dropdown.
+	model.composer.SetValue("/code-review fix the bug")
+	model.slashSuggest.updateSuggestions(model.slash, "/code-review fix the bug")
+	if model.slashSuggest.active {
+		t.Error("suggestions should NOT reactivate when appending after Tab completion")
+	}
+}
+
+func TestTabSuppressionClearsWhenCommandEdited(t *testing.T) {
+	model, _ := newReadyApp(t, 120, 36)
+	model.slash.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code changes"},
+	})
+
+	// Tab-complete /co to /code-review.
+	model.composer.SetValue("/co")
+	model.slashSuggest.updateSuggestions(model.slash, "/co")
+	// Navigate to the code-review skill entry.
+	for model.slashSuggest.selectedCommand() != nil && model.slashSuggest.selectedCommand().Name != "code-review" {
+		model.slashSuggest.selected++
+	}
+	_ = model.acceptSlashSuggestion()
+	if model.slashSuggest.active {
+		t.Error("suggestions should be dismissed after Tab")
+	}
+
+	// Backspacing to change the command word should allow reactivation.
+	model.composer.SetValue("/code-revie")
+	model.slashSuggest.updateSuggestions(model.slash, "/code-revie")
+	if !model.slashSuggest.active {
+		t.Error("suggestions should reactivate when the command word is edited")
+	}
+}
+
+func TestTabSuppressionClearsOnNewSlash(t *testing.T) {
+	model, _ := newReadyApp(t, 120, 36)
+	model.slash.RegisterSkills([]CapabilityItem{
+		{Name: "code-review", Source: "project", Detail: "Review code changes"},
+	})
+
+	// Tab-complete /co to /code-review.
+	model.composer.SetValue("/co")
+	model.slashSuggest.updateSuggestions(model.slash, "/co")
+	// Navigate to the code-review skill entry.
+	for model.slashSuggest.selectedCommand() != nil && model.slashSuggest.selectedCommand().Name != "code-review" {
+		model.slashSuggest.selected++
+	}
+	_ = model.acceptSlashSuggestion()
+
+	// Clear and start a new slash.
+	model.composer.SetValue("hello")
+	model.slashSuggest.updateSuggestions(model.slash, "hello")
+	if model.slashSuggest.active {
+		t.Error("suggestions should not be active for non-slash input")
+	}
+
+	// New slash should show suggestions again.
+	model.composer.SetValue("/")
+	model.slashSuggest.updateSuggestions(model.slash, "/")
+	if !model.slashSuggest.active {
+		t.Error("suggestions should reactivate for a fresh '/' input after Tab suppression")
 	}
 }

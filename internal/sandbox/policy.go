@@ -187,10 +187,23 @@ func defaultReadRoots() []string {
 			"/Library",
 			"/usr/libexec",
 			"/private/var/select",
+			"/private/etc",
 			"/opt/homebrew/bin",
 			"/opt/homebrew/opt",
 			"/opt/homebrew/Cellar",
 		)
+		// macOS developer tools (git, etc.) need read access to Xcode or
+		// Command Line Tools. Git stat()s Xcode's Info.plist as part of
+		// its startup path, so the entire .app bundle must be readable,
+		// not just Contents/Developer.
+		for _, candidate := range []string{
+			"/Applications/Xcode.app",
+			"/Library/Developer/CommandLineTools",
+		} {
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				roots = append(roots, candidate)
+			}
+		}
 	}
 	if goroot := discoverGoRoot(); filepath.IsAbs(goroot) {
 		roots = append(roots, goroot)
