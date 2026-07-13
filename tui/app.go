@@ -1258,6 +1258,8 @@ func (model *AppModel) submitDraft() tea.Cmd {
 		name := strings.TrimSpace(parts[0])
 		if cmd := model.slash.Lookup(name); cmd != nil && cmd.Kind == "skill" {
 			model.composer.Reset()
+			model.transcript.AddNotice("Loaded skill: "+name, model.clock.Now())
+			model.noteLiveOutput()
 			return model.submitToAgent(draft)
 		}
 

@@ -244,9 +244,6 @@ func resolveDispatcher(cfg SessionConfig, hookEngine *hooks.Engine, maxRounds in
 	for _, h := range cfg.ToolHandlers {
 		catalog.MustRegister(h)
 	}
-	for _, s := range skillReg.List() {
-		catalog.MustRegister(skill.NewHandler(s))
-	}
 	eng := buildEngine(cfg)
 	stages := executor.InertStages()
 	if hookEngine != nil && !hookEngine.Empty() {

@@ -795,6 +795,19 @@ func TestSubmitDraft_SkillRoutesToAgent(t *testing.T) {
 	if port.runInputs[0] != "/code-review" {
 		t.Errorf("run input = %q, want '/code-review'", port.runInputs[0])
 	}
+
+	// Verify the "Loaded skill" notice was added to the transcript.
+	texts := blockTexts(&model.transcript)
+	found := false
+	for _, txt := range texts {
+		if strings.Contains(txt, "Loaded skill:") && strings.Contains(txt, "code-review") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'Loaded skill: code-review' notice, got: %v", texts)
+	}
 }
 
 func TestSubmitDraft_BuiltinStillDispatched(t *testing.T) {
