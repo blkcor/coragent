@@ -1,0 +1,14 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Local Coragent state may contain credentials or session data.
+.coragent/
+
+# Local build and benchmark artifacts.
+.cache/
+.gocache/
+coragent
+coverage.out
+*.test
+artifacts/
