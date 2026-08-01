@@ -1,277 +1,336 @@
-# Coragent V2路线图
+# Coragent V2 Roadmap
 
-Coragent V2通过五个产品里程碑逐步成长。每个里程碑在后续里程碑不存在的情况下，也是
-可运行、可用且安全的。实现从终端产品开始，只有产品契约经受住真实仓库工作之后才发布
-SDK。
+Coragent V2 grows through five product milestones. Each milestone is runnable,
+useful, and safe without the milestone after it. The implementation starts with
+a terminal product and publishes an SDK only after the product contracts have
+survived real repository work.
 
-文档基线是一份设计契约，不是调查阶段。M1是第一个实现里程碑，交付可用的只读产品。
+The documentation baseline is a design contract, not an investigation phase.
+M1 is the first implementation milestone and ships a usable read-only product.
 
-## 交付规则
+## Delivery rules
 
-- 构建垂直产品切片。不要落一个直到后续里程碑才有用户可见或测试可见行为的层。
-- 到M4为止，运行时代码保持internal。
-- 每个里程碑都运行已解锁的基准子集。
-- 即使内部契约改变，也要把早期产品场景保留为回归测试。
-- 安全门禁失败时停止里程碑。警告不能替代强制。
-- 不要为了显得迁移更便宜而添加V1兼容路径。
-- 让V2状态与V1分离，这样回滚始终只是一个二进制选择。
+- Build vertical product slices. Do not land a layer that has no user-visible or
+  test-visible behavior until a later milestone.
+- Keep runtime code internal through M4.
+- Run the unlocked benchmark subset in every milestone.
+- Preserve earlier product scenarios as regression tests even when internal
+  contracts change.
+- Stop a milestone when a safety gate fails. Warnings do not substitute for
+  enforcement.
+- Do not add V1 compatibility paths to make migration appear cheaper.
+- Keep V2 state separate from V1 so rollback remains a binary choice.
 
-## 里程碑总览
+## Milestone summary
 
-| 里程碑 | 产品结果 | 基准范围 |
+| Milestone | Product result | Benchmark scope |
 | --- | --- | --- |
-| M1：只读仓库助手 | 有依据的仓库调查+持久会话 | 四个调查任务 |
-| M2：安全变更循环 | 经审阅的编辑与沙箱化验证 | 完整12任务套件 |
-| M3：持久长任务 | 上下文压缩、恢复与重启连续性 | 完整套件加上下文压力测试 |
-| M4：交互式日常主力 | 引导、取消、会话导航和聚焦TUI | TUI评分套件加前端一致性 |
-| M5：证据门控的SDK与切换 | 受支持的V2 SDK和默认产品发布 | 发布门禁与一致性套件 |
+| M1: Read-only Repo Companion | grounded repository investigation with durable sessions | four investigation tasks |
+| M2: Safe Change Loop | reviewed edits and sandboxed verification | full 12-task suite |
+| M3: Durable Long Tasks | context compaction, recovery, and restart continuity | full suite plus context stress |
+| M4: Interactive Daily Driver | steering, cancellation, session navigation, and focused TUI | TUI score suite plus frontend conformance |
+| M5: Evidence-gated SDK and Cutover | supported V2 SDK and default product release | release gate and conformance suite |
 
-## M1：只读仓库助手
+## M1: Read-only Repo Companion
 
-### 用户价值
+### User value
 
-开发者可以就仓库提问、得到基于真实文件的回答、离开进程、之后再恢复同一个会话。如果
-开发止步于M1，Coragent仍是一个有用的只读仓库助手。
+A developer can ask questions about a repository, receive answers grounded in
+real files, leave the process, and resume the same session later. If development
+stops after M1, Coragent remains a useful read-only repository companion.
 
-### 范围
+### Scope
 
-- 行式`coragent` CLI
-- 内部会话状态机
-- 一个可序列化会话命令协议和一个可序列化事件协议
-- 只追加的持久会话记录
-- 会话的创建、列出、加载、恢复和关闭
-- 一个OpenAI兼容流式提供商适配器
-- 显式提供商能力和上下文窗口配置
-- 取消当前提供商流
-- 对速率限制和瞬时传输失败的有界重试，包括`Retry-After`
-- 用于模型调用、传输尝试和重试延迟的持久运行预算
-- 运行时提示词组装
-- `AGENTS.md`的确定性发现
-- 专用提供商凭据源，外加普通、敏感和运行时密钥数据投影
-- 限定工作区的list、read和search工具
-- 纯Go的M1文件工具，不启动辅助进程
-- 即使所有M1工具都是只读的，仍使用同一个Action Broker
-- 脚本化假提供商和临时会话存储
-- 四个调查基准任务
+- a line-oriented `coragent` CLI
+- an internal Session state machine
+- one serializable SessionCommand protocol and one serializable Event protocol
+- an append-only durable transcript
+- session creation, listing, loading, resuming, and closing
+- one OpenAI-compatible streaming provider adapter
+- explicit provider capabilities and context-window configuration
+- cancellation of the active provider stream
+- bounded retry for rate limits and transient transport failures, including
+  `Retry-After`
+- a durable Run Budget for model calls, transport attempts, and retry delay
+- runtime prompt assembly
+- deterministic discovery of `CLAUDE.md` and `AGENTS.md`
+- a dedicated provider credential source plus normal, sensitive, and
+  runtime-secret data projections
+- workspace-scoped list, read, and search tools
+- pure-Go M1 file tools that launch no helper process
+- one Action Broker even though all M1 tools are read-only
+- a scripted fake provider and temporary session store
+- the four investigation benchmark tasks
 
-### 验收门禁
+### Acceptance gate
 
-- 从干净检出开始，用户能在五分钟内配置提供商并收到有依据的仓库回答。
-- 对基准的回答引用所用的文件和行范围。
-- 模型不能请求变更、命令执行、网络访问或工作区外的读取。
-- 已保存会话恢复时带有相同会话记录，并能接收另一轮用户输入。
-- 重放会话记录产生相同的用户可见对话。
-- 每个会话发出单调递增的事件游标，每次运行恰好发出一个终止事件，原子观察不能丢失
-  一个活跃交互。
-- 提供商和产品测试在无网络访问时通过。
-- 取消关闭流，不留下任何活跃提供商工作。
-- 重启不能重置运行的模型调用、传输尝试或重试延迟计数器。
-- 运行时凭据绝不进入会话记录、模型上下文、事件、日志或产物；受保护和已检测的工作区
-  内容完成脱敏。
+- From a clean checkout, a user can configure the provider and receive a
+  grounded repository answer in less than five minutes.
+- Answers to the benchmark cite the files and line ranges used.
+- The model cannot request mutation, command execution, network access, or reads
+  outside the workspace.
+- A saved session resumes with the same transcript and can accept another user
+  turn.
+- Replaying a transcript produces the same user-visible conversation.
+- Every session emits monotonic Event cursors, every run emits exactly one
+  terminal Event, and atomic observation cannot lose an active interaction.
+- Provider and product tests pass without network access.
+- Cancellation closes the stream and leaves no active provider work.
+- Restart cannot reset a run's model-call, transport-attempt, or retry-delay
+  counters.
+- Runtime credentials never enter Transcript, Model Context, Events, logs, or
+  artifacts; protected and detected workspace content is redacted.
 
-### 失败行为
+### Failure behavior
 
-畸形提供商流、无效持久记录和永久提供商错误会用类型化原因停止运行。缺少可选指令文件
-是正常的。冲突的指令源遵循`architecture.md`中的优先级并记录其出处。
+Malformed provider streams, invalid durable records, and permanent provider
+errors stop the run with a typed cause. Missing optional instruction files are
+normal. Conflicting instruction sources follow the precedence in
+`architecture.md` and record their provenance.
 
-### 回滚
+### Rollback
 
-M1只写入`~/.coragent/v2/`和`.coragent/v2/`。切到V1不需要修改或删除这些文件。
+M1 writes session state under `~/.coragent/sessions/` and settings through the
+same paths as V1. Switching to V1 does not require changing or deleting those
+files.
 
-## M2：安全变更循环
+## M2: Safe Change Loop
 
-### 用户价值
+### User value
 
-开发者可以让Coragent调查一个小问题、审阅精确补丁或命令、批准它、运行验证、并收到
-有依据的结果。M2是第一个能完成日常代码变更的里程碑。
+A developer can ask Coragent to investigate a small problem, review an exact
+patch or command, approve it, run verification, and receive a grounded result.
+M2 is the first milestone that can complete everyday code changes.
 
-### 范围
+### Scope
 
-- 一个用于文件创建和修改的预备补丁工具
-- 绑定身份的预览和过期源检测
-- 一个带超时、进程组取消和有界输出的命令工具
-- 不可变的每会话授权信封加生效策略
-- 为每个文件工具提供限定工作区的文件系统服务
-- macOS OS级命令沙箱
-- 一个进程组监管进程：当Coragent控制通道关闭时杀死子进程
-- 在没有等效隔离的平台上的禁用命令工具
-- 没有环境凭据变量的最小进程环境
-- 针对变更和命令的带关联审批会话命令
-- 用于不确定恢复动作的确认会话命令
-- 修改参数会使旧预览失效，并要求重新准备和再次审批
-- 按调用的读根、写根和网络grant
-- 持久动作尝试日志与崩溃对账
-- 运行预算扩展：工具调用计数和活跃进程时间
-- 在预览或投影之前，对预备补丁和进程输出做凭据检测
-- 当输出超过模型可见预算时持久化结果
-- 完整的工具调用配对：成功、失败、拒绝、策略阻止、取消、过期状态、先前结果跳过和
-  崩溃对账
-- 完整12任务基准支持
+- one prepared patch tool for file creation and modification
+- identity-bound previews and stale-source detection
+- one command tool with timeout, process-group cancellation, and bounded output
+- an immutable per-session Authority Envelope plus Effective Policy
+- a workspace-scoped filesystem service for every file tool
+- macOS OS-level command sandboxing
+- a process-group supervisor that kills children when the Coragent control
+  channel closes
+- a disabled command tool on platforms without equivalent confinement
+- a minimal process environment with no ambient credential variables
+- correlated approval SessionCommands for mutations and commands
+- an acknowledgement SessionCommand for an indeterminate recovered action
+- argument revision that invalidates the old preview and requires preparation
+  and approval again
+- per-call read-root, write-root, and network grants
+- a durable Action Attempt journal and crash reconciliation
+- Run Budget extensions for tool-call count and active process time
+- credential detection for prepared patches and process output before preview or
+  projection
+- result persistence when output exceeds the model-facing budget
+- complete tool-call pairing for success, failure, denial, policy block,
+  cancellation, stale state, prior-result skips, and crash reconciliation
+- full 12-task benchmark support
 
-### 初始权限姿态
+### Initial permission posture
 
-- 工作区读取允许
-- 工作区变更用精确预备补丁请求审批
-- 命令用其有效命令、最小环境和grant请求审批
-- 工作区外的根目录和网络端点必须在会话启动时配置进授权信封
-- 按调用grant只激活授权信封的狭窄子集
-- 审批随预备动作一起过期
+- workspace reads are allowed
+- workspace mutations ask with an exact prepared patch
+- commands ask with their effective command, minimal environment, and grants
+- outside-workspace roots and network endpoints must be configured in the
+  Authority Envelope when the session starts
+- a per-call grant activates only a narrow subset of the Authority Envelope
+- approvals expire with the prepared action
 
-M2不持久记住已做的决定，也不暴露替代权限模式。
+M2 does not persist remembered decisions or expose alternate permission modes.
 
-### 验收门禁
+### Acceptance gate
 
-- Coragent从一次用户请求完成：调查、审阅编辑、验证命令和最终报告。
-- 展示的补丁与提交的补丁逐字节一致。
-- 预览之后被修改的文件不能被过期预备动作覆盖。
-- 绝对路径、`..`、符号链接和重命名竞态不能逃出已批准的工作区和grant。
-- 未审批的动作不产生任何副作用。
-- 取消命令会终止整个进程组。
-- 每个动作尝试边界的崩溃都能对账文件状态、绝不重放进程动作，并产生恰好一个终止工具
-  结果。
-- 完整基准通过行式CLI作为三个12槽位轮次运行，并记录会话记录、差异、命令输出和
-  安全结果。
-- 无论总分或基础设施重跑如何，任何执行都不触发`docs/benchmarks.md`中的`safety_fail`。
+- Coragent completes an investigation, reviewed edit, verification command, and
+  final report from one user request.
+- The displayed patch and committed patch are byte-for-byte identical.
+- A file changed after preview cannot be overwritten by the stale prepared
+  action.
+- Absolute paths, `..`, symlinks, and rename races cannot escape the approved
+  workspace and grants.
+- An unapproved action performs no side effect.
+- Cancelling a command terminates the full process group.
+- Crashes at every Action Attempt boundary reconcile file state, never replay a
+  process action, and produce exactly one terminal ToolResult.
+- The full benchmark runs as three 12-slot rounds through the line-oriented CLI,
+  with recorded transcripts, diffs, command outputs, and safety results.
+- No execution meets a `safety_fail` condition from `docs/benchmarks.md`,
+  regardless of aggregate score or an infrastructure rerun.
 
-### 前提门禁
+### Premise gate
 
-只有当36个计分槽位中至少26个通过、调查类和聚焦编辑类任务各至少通过12个槽位中
-的8个、修复类和恢复类任务各至少通过6个槽位中的4个、且没有安全失败时，M2才能
-继续。25分或以下意味着产品前提崩塌。总分更高但某个类别低于下限则前提未被证实。两种
-结果都会暂停M3及之后的产品工作，同时把失败归因到循环、提示词、上下文、提供商或
-工具契约并加以修正。
+M2 proceeds only when at least 26 of 36 scored slots pass, investigation and
+focused-edit tasks each pass at least 8 of 12 slots, repair and recovery tasks
+each pass at least 4 of 6 slots, and no safety failure occurs. A score of 25 or
+fewer collapses the product premise. A higher total with a missed category floor
+leaves it unproven. Either result pauses M3 and later product work while failures
+are assigned to the loop, prompt, context, provider, or tool contract and
+corrected.
 
-不要为了弥补M2核心失败而启动子代理或TUI工作。
+Do not start subagent or TUI work to compensate for a failed M2 core.
 
-### 回滚
+### Rollback
 
-预备动作一次性使用，会话记录只追加。回滚二进制不会重放已审批的动作。仓库变更仍然是
-普通、经用户审阅的Git变更。
+Prepared actions are single-use and session records are append-only. Rolling back
+the binary does not replay approved actions. Repository changes remain ordinary
+user-reviewed Git changes.
 
-## M3：持久长任务
+## M3: Durable Long Tasks
 
-### 用户价值
+### User value
 
-Coragent能在超出单个模型上下文窗口的情况下工作，从常见提供商失败中恢复，并在进程
-退出后恢复，而不丢失当前目标或重做已提交的动作。
+Coragent can work beyond one model context window, recover from common provider
+failures, and resume after process exit without losing the current goal or
+repeating committed actions.
 
-### 范围
+### Scope
 
-- 分离的持久会话记录、结构化任务台账和模型上下文视图
-- 会话拥有的blob存储，用于大型普通或已脱敏的工具结果
-- 确定性修剪和可重新加载的工具结果引用
-- 带会话记录范围溯源的主动摘要检查点
-- 一条针对提供商上下文溢出的有界响应式压缩路径
-- 压缩后恢复策略、项目指令、当前目标、约束、待处理工具状态、任务台账和近期文件上下文
-- 针对速率限制、过载、输出截断、上下文溢出、畸形流和取消的显式恢复状态
-- 有界输出预算升级和续写
-- 运行预算扩展：压缩、续写、令牌和总活跃时间上限
-- 崩溃安全的会话记录、动作尝试、预算、检查点和任务台账持久化
-- 面向前端的上下文用量和恢复事件
+- separate durable transcript, structured task ledger, and model context view
+- a session-owned blob store for large normal or already-redacted tool results
+- deterministic pruning and reloadable tool-result references
+- proactive summary checkpoints with transcript range provenance
+- one bounded reactive compaction path for provider context overflow
+- post-compaction restoration of policy, project instructions, current goal,
+  constraints, pending tool state, task ledger, and recent file context
+- explicit recovery state for rate limits, overload, output truncation, context
+  overflow, malformed streams, and cancellation
+- bounded output-budget escalation and continuation
+- Run Budget extensions for compaction, continuation, token, and total active
+  time limits
+- crash-safe transcript, Action Attempt, budget, checkpoint, and task-ledger
+  persistence
+- context usage and recovery events for frontends
 
-### 验收门禁
+### Acceptance gate
 
-- 一个脚本化场景累计超过两个配置的上下文窗口，仍能完成所请求的仓库任务。
-- 长上下文场景是独立的非评分门禁，不向固定36槽位基准添加槽位。
-- 压缩保留当前目标、约束、未关闭工具对、任务状态和所需项目指令。
-- 每个检查点之后，源会话记录仍然可用。
-- 在压缩前后立刻退出，会产生相同的恢复任务状态。
-- 恢复不会重做已提交的补丁或命令。
-- 恢复保留运行预算计数器，并在下一次模型请求之前对每个已开始的动作尝试做对账。
-- 恢复测试证明每次重试都消耗计数器，并在其配置边界停止。
-- 畸形摘要不能取代结构化约束或任务状态。
+- A scripted scenario accumulates more than two configured context windows and
+  still completes the requested repository task.
+- The long-context scenario is an independent non-scoring gate and does not add
+  slots to the fixed 36-slot benchmark.
+- Compaction preserves current goals, constraints, open tool pairs, task state,
+  and required project instructions.
+- Source transcript records remain available after every checkpoint.
+- Exiting immediately before or after compaction produces the same resumed task
+  state.
+- Resume does not repeat a committed patch or command.
+- Resume retains Run Budget counters and reconciles every started Action Attempt
+  before another model request.
+- Recovery tests prove that every retry consumes a counter and stops at its
+  configured bound.
+- A malformed summary cannot replace structured constraints or task state.
 
-### 失败行为
+### Failure behavior
 
-如果主动压缩失败，当前有效上下文保持活跃，直到提供商限制要求响应式压缩。如果响应式
-压缩也失败，运行在会话记录完整的情况下停止。Coragent绝不会为了适配请求而删除源历史。
+If proactive compaction fails, the current valid context remains active until a
+provider limit requires reactive compaction. If reactive compaction also fails,
+the run stops with the transcript intact. Coragent never deletes source history
+to make a request fit.
 
-### 回滚
+### Rollback
 
-M3添加新的V2记录种类，但不修改V1数据。不识别更新记录的V2二进制会以版本错误
-只读停止，而不是重写会话。
+M3 adds new V2 record kinds but does not modify V1 data. A V2 binary that does
+not understand a newer record stops read-only with a version error instead of
+rewriting the session.
 
-## M4：交互式日常主力
+## M4: Interactive Daily Driver
 
-### 用户价值
+### User value
 
-开发者可以整天使用Coragent，引导活跃工作、取消它、切换会话、检查补丁和工具状态，
-并从聚焦的终端界面恢复之前的工作。
+A developer can use Coragent throughout the day, steer active work, cancel it,
+switch sessions, inspect patches and tool state, and resume previous work from a
+focused terminal interface.
 
-### 范围
+### Scope
 
-- 在文档化安全边界应用排队引导
-- 排队的下一个提示
-- 独立于引导的即时取消
-- 最小Bubble Tea TUI
-- 会话记录渲染
-- 活跃工具和命令状态
-- 预备补丁和权限视图
-- 永不泄露匹配值的脱敏提示
-- 任务台账和上下文压力视图
-- 会话创建、选择、恢复和关闭
-- 窄终端纯文本回退
-- 保留行式CLI作为受支持的诊断前端
+- queued steering applied at documented safe boundaries
+- queued next prompts
+- immediate cancellation separate from steering
+- a minimal Bubble Tea TUI
+- transcript rendering
+- active tool and command status
+- prepared patch and permission views
+- redaction notices that never reveal the matched value
+- task-ledger and context-pressure views
+- session creation, selection, resume, and close
+- narrow-terminal plain-text fallback
+- the line-oriented CLI retained as a supported diagnostic frontend
 
-M4不重建V1的主题、鼠标选择、动画、复杂Markdown、斜杠技能菜单或能力检查器。
+M4 does not rebuild V1 themes, mouse selection, animation, complex Markdown,
+slash-skill menus, or a capability inspector.
 
-### 验收门禁
+### Acceptance gate
 
-- 提供商或工具工作期间提交的引导，会在安全边界之后、下一次模型请求之前出现。
-- 因引导被跳过的剩余工具调用收到明确的跳过结果。
-- 取消让UI回到输入状态，不留下模型流、工具或进程在运行。
-- 加载已保存会话渲染与CLI相同的语义会话记录。
-- 在最小支持的终端尺寸下，权限始终可以被拒绝。
-- TUI成为评分前端并完成一份新的36槽位基准报告。CLI和TUI在确定性会话命令、
-  事件和会话记录一致性套件中产生相同的运行时结果。
-- 前端测试证明：任一前端都不导入运行时内部、也不拥有第二套会话状态机。
+- Steering submitted during provider or tool work appears before the next model
+  request after a safe boundary.
+- Remaining tool calls skipped because of steering receive explicit skipped
+  results.
+- Cancellation returns the UI to input state and leaves no model stream, tool,
+  or process running.
+- Loading a saved session renders the same semantic transcript as the CLI.
+- Permission can always be denied at the minimum supported terminal size.
+- The TUI becomes the scoring frontend and completes a new 36-slot benchmark
+  report. The CLI and TUI also produce the same runtime outcomes in the
+  deterministic SessionCommand, Event, and transcript conformance suite.
+- Frontend tests prove that neither frontend imports runtime internals or owns a
+  second session state machine.
 
-### 回滚
+### Rollback
 
-如果TUI无法在某个终端运行，行式CLI仍然可用。两个前端使用同一份V2会话数据。
+The line-oriented CLI remains available if the TUI cannot run in a terminal.
+Both frontends use the same V2 session data.
 
-## M5：证据门控的SDK与切换
+## M5: Evidence-gated SDK and Cutover
 
-### 用户价值
+### User value
 
-Coragent既成为默认终端产品，又成为一个Go运行时，其他程序可以不依赖内部包就嵌入它。
+Coragent becomes both the default terminal product and a Go runtime that another
+program can embed without depending on internal packages.
 
-### 范围
+### Scope
 
-- 根据M1到M4行为设计的新的Go主版本SDK
-- 在M5 API评审中，从产品验证过的概念里刻意挑选的小型公开词汇；M5之前的内部类型
-  名都不具约束力
-- 无内部别名的SDK自有公开数据类型
-- 可序列化事件中不嵌入通道或回调
-- 工具与提供商一致性套件
-- CLI和TUI迁移为只使用公开SDK
-- 一个小型一次性示例前端
-- 从V2开始的版本和兼容策略
-- 安装、升级、回滚和V1不兼容文档
-- 针对已验证行为平台的发布打包
+- a new major Go SDK designed from M1 through M4 behavior
+- a deliberately small public vocabulary chosen during the M5 API review from
+  product-proven concepts; no pre-M5 internal type name is binding
+- SDK-owned public data types with no internal aliases
+- no embedded channels or callbacks in serializable events
+- Tool and Provider conformance suites
+- CLI and TUI migrated to use only the public SDK
+- one small one-shot example frontend
+- versioning and compatibility policy beginning with V2
+- installation, upgrade, rollback, and V1 incompatibility documentation
+- release packaging for platforms with verified behavior
 
-### 验收门禁
+### Acceptance gate
 
-- 36个计分槽位中至少29个通过，且每个任务至少通过其三个槽位中的两个。
-- 不可变GA参考模型档案和留出泛化套件通过`docs/benchmarks.md`中的门禁。
-- 任何执行都不触发`docs/benchmarks.md`中的`safety_fail`。
-- CLI、TUI和示例前端只导入SDK。
-- 每个导出的API都由Coragent或具体示例演练过。
-- SDK类型不包含对内部运行时类型的别名。
-- 提供商与工具一致性套件对内建适配器和测试替身通过。
-- 完整的离线、竞态、lint、构建、macOS和打包门禁通过。
-- 维护者在第一个稳定标签前批准API支持负担。
+- At least 29 of 36 scored slots pass, and each task passes at least two of its
+  three slots.
+- The immutable GA reference model profile and held-out generalization suite pass
+  the gates in `docs/benchmarks.md`.
+- No execution meets a `safety_fail` condition from `docs/benchmarks.md`.
+- CLI, TUI, and the example frontend import only the SDK.
+- Every exported API is exercised by Coragent or the concrete example.
+- SDK types contain no aliases to internal runtime types.
+- Provider and Tool conformance suites pass against the built-in adapters and
+  fakes.
+- The full offline, race, lint, build, macOS, and packaging gates pass.
+- The maintainer approves the API support burden before the first stable tag.
 
-### 切换与回滚
+### Cutover and rollback
 
-V2二进制成为默认的`coragent`。V1以带标签的发布保留一个发布周期。V2不删除或迁移
-V1数据。回滚只更换已安装的二进制，两个数据命名空间都保持完整。
+The V2 binary becomes the default `coragent`. V1 remains available as a tagged
+release for one release cycle. V2 does not delete or migrate V1 data. Rolling
+back changes the installed binary and leaves both data namespaces intact.
 
-## V2发布后的条件工作
+## Conditional work after the V2 release
 
-只有当单代理GA门禁通过、且记录的日常主力会话显示失败源于上下文隔离或需要独立并行
-调查时，才考虑子代理。其设计必须包含新鲜上下文、收窄的工具、权限上浮、父级取消、
-仅结果返回，以及变更工作的工作树隔离。
+Subagents are considered only when the single-agent GA gate passes and recorded
+daily-driver sessions show failures caused by context isolation or independent
+parallel investigation. Their design must include fresh context, narrowed tools,
+permission bubbling, parent cancellation, result-only return, and worktree
+isolation for mutating work.
 
-常驻团队需要单独的产品理由、持久任务图、类型化邮箱协议、原子认领和工作区隔离。MCP
-需要M5工具契约和单独的安全评审。初始包布局不隐含这两项能力。
+Persistent teams require a separate product case, durable task graph, typed
+mailbox protocol, atomic claiming, and workspace isolation. MCP requires the M5
+Tool contract and a separate security review. Neither capability is implied by
+the initial package layout.

@@ -1,150 +1,179 @@
-# Coragent V2代理开发指南
+# Coragent V2 Agent Guidelines
 
-Coragent V2是Coragent编码代理的净室重建（clean-room rebuild）版本：一个用Go
-编写、产品优先的终端代理。V2运行时不保留V1的公开API、传输格式、包结构或会话
-数据格式。
+Coragent V2 is a clean-room rebuild of the Coragent coding agent. It is a
+product-first terminal agent written in Go. The V2 runtime does not preserve the
+V1 public API, wire format, package layout, or session data format.
 
-当前分支是V2的权威源码。`master`分支仅作为历史证据。除非说明要保留哪些行为、
-以及为什么新实现不比旧实现更安全或更简单，否则不得把V1运行时代码复制进V2。
+The current branch contains the V2 source of truth. The `master` branch is
+historical evidence only. Do not copy V1 runtime code into V2 without documenting
+the behavior being preserved and why a new implementation is not safer or
+simpler.
 
-## 改动项目前请先阅读
+## Read before changing the project
 
-按顺序阅读以下文件：
+Read these files in order:
 
 1. `docs/product.md`
 2. `docs/architecture.md`
 3. `docs/roadmap.md`
 4. `docs/benchmarks.md`
 
-产品行为和基准证据优先于架构偏好。如果某个设计让代码更整洁、却降低了真实任务的
-成功率，那么这个设计应被否决。
+Product behavior and benchmark evidence override architectural preference. If a
+design makes the code cleaner but lowers real task success, the design loses.
 
-## 已确定的方向
+## Approved direction
 
-除非维护者明确重新讨论，以下决定视为最终决定：
+These decisions are settled unless the maintainer explicitly reopens them:
 
-- 产品行为优先于SDK设计。
-- 公开的V2 SDK只在M5冻结，即运行时通过产品基准之后。
-- V2与V1不保持源码兼容，也不保持传输兼容。
-- 第一个前端是小型行式CLI。功能聚焦的TUI要等变更循环和长任务上下文工作完成后再做。
-- 单个代理必须先达到质量门槛，之后子代理、团队、MCP或并行工具才能进入范围。
-- 除非维护者批准第二个运行时，Go仍是唯一的实现语言。
+- Product behavior comes before SDK design.
+- The public V2 SDK is frozen only in M5, after the runtime passes the product
+  benchmark.
+- V2 is not source-compatible or wire-compatible with V1.
+- The first frontend is a small line-oriented CLI. A focused TUI arrives after
+  the change loop and long-task context work.
+- A single agent must meet the quality gate before subagents, teams, MCP, or
+  parallel tools enter scope.
+- Go remains the only implementation language unless the maintainer approves a
+  second runtime.
 
-## 产品不变量
+## Product invariants
 
-1. 持久会话记录、发送给模型的上下文和前端事件是三种不同的数据产品。压缩可以改变
-   模型上下文，但绝不重写会话记录。
-2. 会话命令（SessionCommand）改变会话状态。事件报告可序列化的事实。事件绝不包含
-   通道、回调、闭包、运行时凭据或内部指针。
-3. 每个提议的工具调用恰好收到一个工具结果，包括因取消、引导、拒绝或先前失败而被
-   跳过的调用。
-4. 每个动作只走一条Action Broker路径。内置工具、未来的外部工具和委派工具没有
-   其他执行路径。
-5. 文件操作与命令执行遵循同一套工作区策略。一个文件工具并不会仅仅因为不启动进程
-   就被信任。
-6. 会话授权信封是不可变的最大权限。生效策略和权限可以收窄或激活它的一个子集，但
-   审批不能扩大它。
-7. 展示的补丁是绑定身份的预备动作。如果提交前源文件发生变化，执行会失败即关闭，
-   并重新准备一个补丁。
-8. 取消会传播到模型提供商流、工具执行、子进程组以及任何未来的子代理。
-9. 当模型产生了实际工具调用时，循环继续。提供商结束元数据是有用的证据，但不是唯一
-   的继续信号。
-10. 提示词内容由当前运行时事实组装。不要维护一个不断膨胀的硬编码系统字符串。
-11. 恢复动作需要分类、限界、持久化预算并记录在案。禁止盲目或无限的重试循环。
-12. 前端渲染运行时事实并发送会话命令。前端不拥有代理状态，也不重建隐藏的控制逻辑。
-13. 每个副作用在执行前都有持久化的动作尝试记录。崩溃恢复会核对未完成的尝试，且绝不
-    自动重试它。
-14. 前端快照与实时事件订阅使用同一次原子观察操作和会话级游标。
-15. 运行时密钥绝不进入工具、进程、会话记录、模型上下文、事件、日志或产物。受保护
-    路径与已检测到的密钥内容使用`docs/architecture.md`中的脱敏投影。
+1. The durable transcript, the context sent to the model, and frontend events
+   are different data products. Compaction may change model context but never
+   rewrites the transcript.
+2. SessionCommands change session state. Events report serializable facts.
+   Events never contain channels, callbacks, closures, runtime credentials, or
+   internal pointers.
+3. Every proposed tool call receives exactly one tool result, including calls
+   skipped because of cancellation, steering, denial, or an earlier failure.
+4. Every action uses one Action Broker path. Built-in tools, future external
+   tools, and delegated tools do not get alternate execution routes.
+5. File operations and command execution obey the same workspace policy. A file
+   tool is not trusted merely because it does not launch a process.
+6. The session Authority Envelope is the immutable maximum authority. Effective
+   Policy and Permission may narrow or activate a subset of it, but an approval
+   cannot widen it.
+7. A displayed patch is an identity-bound prepared action. If its source files
+   change before commit, execution fails closed and prepares a new patch.
+8. Cancellation propagates through the provider stream, tool execution, child
+   process group, and any future child agent.
+9. The loop continues when the model produced actual tool calls. Provider finish
+   metadata is useful evidence but is not the only continuation signal.
+10. Prompt content is assembled from current runtime facts. Do not maintain one
+    growing hardcoded system string.
+11. Recovery actions are classified, bounded, durably budgeted, and recorded.
+    Blind or unlimited retry loops are forbidden.
+12. A frontend renders runtime facts and sends SessionCommands. It does not own
+    agent state or reconstruct hidden control logic.
+13. Every side effect has a durable Action Attempt written before execution.
+    Crash recovery reconciles an unfinished attempt and never repeats it
+    automatically.
+14. A frontend snapshot and live Event subscription use one atomic observation
+    operation and a session-wide cursor.
+15. Runtime secrets never enter tools, processes, Transcript, Model Context,
+    Events, logs, or artifacts. Protected-path and detected secret content uses
+    the redacted projections in `docs/architecture.md`.
 
-## 范围纪律
+## Scope discipline
 
-初始V2路线图不包括：
+The initial V2 roadmap excludes:
 
-- V1兼容适配器
-- M5之前的稳定公开SDK
-- 多类模型提供商
-- 子代理、常驻队友和并行工具
-- MCP和插件系统
-- 外部命令钩子和通用生命周期钩子框架
-- 持久记住的权限规则和多种权限模式
-- M4之前的全屏TUI
-- 在没有强制沙箱后端的平台上运行进程动作
+- V1 compatibility adapters
+- a stable public SDK before M5
+- multiple provider families
+- subagents, persistent teammates, and parallel tools
+- MCP and plugin systems
+- external command hooks and a general lifecycle hook framework
+- durable remembered permission rules and multiple permission modes
+- a full-screen TUI before M4
+- process actions on platforms without an enforcing sandbox backend
 
-不要因为存在一个方便的接缝就添加被排除的能力。只有在有基准证据并更新产品文档之后，
-才能重新讨论范围。
+Do not add an excluded capability because a seam makes it easy. Reopen scope only
+with benchmark evidence and an updated product document.
 
-## 执行模型
+## Execution model
 
-- 每个会话同时只有一个活跃的运行。
-- 到M4为止，工具调用顺序执行。
-- M4起提供的引导会被排队，并在下一个安全边界应用。
-- 取消与引导不同，会中断正在进行的活动。
-- 工作区内的只读动作不需要审批。
-- 工作区变更和命令在产生第一个副作用前需要审批。
-- 工作区外的可选根目录或网络端点必须在会话启动时就存在于授权信封中。按调用授权的
-  grant只能激活信封中已有的子集。
-- 模型提供商传输只能访问会话配置中固定的端点。它的凭据和连接性绝不成为工具或进程
-  的权限。
-- 初始GA只在macOS上支持进程动作（使用操作系统强制沙箱）。其他平台在准备或审批
-  前禁用命令工具。
-- 进程运行器构建最小化环境。它绝不转发完整的主机环境或环境中的凭据变量。
+- One active run per session.
+- Tool calls execute sequentially through M4.
+- Steering, available from M4, is queued and applied at the next safe boundary.
+- Cancellation is separate from steering and interrupts active work.
+- Read-only actions inside the workspace do not require approval.
+- Workspace mutations and commands require approval before their first side
+  effect.
+- Optional outside-workspace roots or network endpoints must be present in the
+  Authority Envelope when the session starts. A per-call grant can activate only
+  a subset already in that envelope.
+- Provider transport may reach only the endpoint fixed in session configuration.
+  Its credential and connectivity never become tool or process authority.
+- Initial GA supports process actions only on macOS with an OS-enforced sandbox.
+  Other platforms disable the command tool before preparation or approval.
+- The process runner builds a minimal environment. It never forwards the full
+  host environment or ambient credential variables.
 
-## 计划中的仓库边界
+## Planned repository boundaries
 
-架构先定义职责，再定义包。实现开始后，保持这些依赖是单向的：
+The architecture defines responsibilities before packages. When implementation
+starts, keep these dependencies one-way:
 
 ```text
 frontends -> engine -> context/provider/action -> store and platform adapters
 ```
 
-引擎不得导入前端。工具不得绕过Action Broker。提供商适配器不得直接发出前端事件。
+The engine must not import a frontend. Tools must not bypass the Action Broker.
+Provider adapters must not emit frontend events directly.
 
-在M5之前，新的运行时包归属`internal/`下。不要为了让中间里程碑看起来完整而创建
-公开门面。
+Until M5, new runtime packages belong under `internal/`. Do not create a public
+facade to make an intermediate milestone look complete.
 
-## Go约定
+## Go conventions
 
-- Go 1.22或更高版本。
-- 每个阻塞操作都把`context.Context`放在第一位。
-- 用`%w`包装有因果关系的错误。
-- 工具失败会成为模型可见的结果。程序员错误和损坏的持久化状态会停止运行。
-- 诊断使用`log/slog`。日志绝不进入会话记录或事件流。
-- 使用产品词汇中的具体名称：Session、SessionCommand、Event、Transcript、Context、
-  ToolCall、ToolResult、PreparedAction、Provider、ActionAttempt、RunBudget、
-  ActionBroker。
-- 提供商特有的传输类型放在提供商适配器内部。
-- 绝不根据模型名称推断上下文窗口。从提供商能力数据或显式配置中获取。
+- Go 1.22 or newer.
+- Every blocking operation takes `context.Context` first.
+- Wrap causal errors with `%w`.
+- Tool failures become model-visible results. Programmer errors and corrupted
+  durable state stop the run.
+- Use `log/slog` for diagnostics. Logs never enter the transcript or event
+  stream.
+- Use concrete names from the product vocabulary: Session, SessionCommand,
+  Event, Transcript, Context, ToolCall, ToolResult, PreparedAction, Provider,
+  ActionAttempt, RunBudget, and ActionBroker.
+- Keep provider-specific wire types inside the provider adapter.
+- Never infer a context window from a model name. Obtain it from provider
+  capability data or explicit configuration.
 
-推荐的命令：
+Preferred commands:
 
-| 使用 | 避免 |
+| Use | Avoid |
 | --- | --- |
 | `rg` | `grep` |
 | `fd` | `find` |
 | `eza` | `ls` |
 | `sd` | `sed` |
-| `golangci-lint` | 手写lint替代品 |
+| `golangci-lint` | hand-written lint substitutes |
 
-## 测试
+## Testing
 
-- 所有状态机、提供商、上下文、动作、权限和持久化行为都必须在离线状态下可测试。
-- 使用脚本化的假提供商。单元测试绝不调用真实模型。
-- 用`t.TempDir()`作为仓库、会话、blob和工具的临时目录。
-- 对取消、审批、引导和进程清理路径运行竞态测试。
-- 测试不变量，而不只是示例。测试套件必须证明：工具调用与结果一一配对、没有未经
-  审批的副作用、压缩不改变会话记录、事件顺序单调、取消后没有残留任务。
-- 在每个动作尝试、副作用、工具结果事务、预算预留和观察游标检查点前后注入崩溃。
-- 让原子快照订阅与审批、工具完成和运行终止并发竞争。证明重连既不会看到缺失、也
-  不会看到重复的状态。
-- 持久化运行预算计数器，并证明重启不能重置恢复、令牌、工具调用或活动时间上限。
-- 用版本化的密钥语料测试运行时凭据、受保护文件、用户提示匹配、流式模型输出、工具
-  输出、预备补丁、日志和blob。在每个投影边界之前测试脱敏。
-- 每个里程碑运行`docs/benchmarks.md`中已解锁的子集。M2及之后还要运行完整的
-  12任务套件。
+- All state-machine, provider, context, action, permission, and persistence
+  behavior must be testable offline.
+- Use a scripted fake provider. Unit tests never call a real model.
+- Use `t.TempDir()` for repository, session, blob, and tool fixtures.
+- Run race tests on cancellation, approval, steering, and process cleanup paths.
+- Test invariants, not only examples. The suite must prove tool-call pairing,
+  no unapproved side effects, transcript immutability under compaction, monotonic
+  event ordering, and cancellation without orphan work.
+- Inject crashes before and after every Action Attempt, side effect, ToolResult
+  transaction, budget reservation, and observation cursor checkpoint.
+- Race atomic snapshot subscription against approval, tool completion, and run
+  termination. Prove reconnect sees neither missing nor duplicated state.
+- Persist Run Budget counters and prove restart cannot reset recovery, token,
+  tool-call, or active-time limits.
+- Test runtime credentials, protected files, user-prompt matches, streamed model
+  output, tool output, prepared patches, logs, and blobs against the versioned
+  secret corpus. Test redaction before every projection boundary.
+- Each milestone runs the unlocked subset of `docs/benchmarks.md`. M2 and later
+  also run the full 12-task suite.
 
-代码就绪后的基线验证命令：
+Baseline verification commands once code exists:
 
 ```sh
 gofmt -w .
@@ -154,30 +183,38 @@ go build ./cmd/coragent
 golangci-lint run ./...
 ```
 
-## 里程碑交付
+## Milestone delivery
 
-每个路线图里程碑都必须是可运行、可用的，即使后续工作永远不落地。不要创建仅供调查
-的里程碑，也不要创建必须等到下一阶段才能使用的阶段。
+Each roadmap milestone must be runnable and useful if later work never lands.
+Do not create an investigation-only milestone or a phase that becomes usable only
+after the next phase.
 
-实现某个里程碑之前：
+Before implementation of a milestone:
 
-1. 确认它将解锁的产品行为和基准用例。
-2. 只设计该里程碑所需的内层接口。
-3. 列出失败与取消路径。
-4. 定义回滚边界。
+1. Confirm the product behavior and benchmark cases it unlocks.
+2. Design only the internal interfaces needed for that milestone.
+3. List failure and cancellation paths.
+4. Define the rollback boundary.
 
-实现之后：
+After implementation:
 
-1. 运行离线测试和该里程碑的基准子集。
-2. 记录证据，包括失败。
-3. 行为发生变化时，更新架构或产品文档。
-4. 安全门禁失败时不得推进。
+1. Run offline tests and the milestone benchmark subset.
+2. Record evidence, including failures.
+3. Update architecture or product docs when behavior changed.
+4. Do not advance when a safety gate fails.
 
-"后续阶段不能修改早期公开契约"这条V1规则不适用于V2内部。M5之前，当基准证据
-证明成本合理时，内部契约可以改变。M5之后，发布的V2 SDK遵循语义化版本。
+The V1 rule that later phases cannot change earlier public contracts does not
+apply to V2 internals. Before M5, internal contracts may change when benchmark
+evidence justifies the cost. After M5, the published V2 SDK follows semantic
+versioning.
 
-## 本地与持久数据
+## Local and durable data
 
-- 绝不提交`.coragent/`、凭据、会话记录、基准运行产物或生成的模型输出。
-- 测试绝不读取或修改真实用户状态。
-- 回滚到V1不需要数据迁移或删除。
+- Never commit `.coragent/`, credentials, transcripts, benchmark run artifacts,
+  or generated model output.
+- V2 uses the same settings paths as V1 (`~/.coragent/settings.json` and
+  `.coragent/settings.json`). This is a clean-room rebuild; V1 installs are
+  expected to be superseded.
+- Durable session state lives under `~/.coragent/sessions/`.
+- Tests must never read or modify real user state.
+- Rollback to V1 must not require a data migration or deletion.

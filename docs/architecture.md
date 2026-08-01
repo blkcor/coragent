@@ -1,30 +1,34 @@
-# Coragent V2架构
+# Coragent V2 Architecture
 
-本文档定义V2的运行时边界、数据流、状态转换和安全不变量。它不冻结公开的Go API。
-到M5之前，所有实现包都保持internal。
+This document defines the V2 runtime boundaries, data flow, state transitions,
+and safety invariants. It does not freeze a public Go API. All implementation
+packages remain internal until M5.
 
-请先阅读`product.md`。产品行为和基准证据优先于这里提出的任何包形状。
+Read `product.md` first. Product behavior and benchmark evidence take precedence
+over a package shape proposed here.
 
-## 架构定位
+## Architectural position
 
-Coragent是模型外层的运行时。模型决定说什么、请求哪些工具。Coragent拥有持久会话、
-模型上下文、工具执行、权限、恢复和用户交互。
+Coragent is a runtime around a model. The model chooses what to say and which
+tools to request. Coragent owns the durable session, model context, tool
+execution, authority, recovery, and user interaction.
 
-核心循环保持精简：
+The central loop stays small:
 
 ```text
-组装模型请求
-调用模型提供商
-记录助手输出
-通过 Action Broker 执行每个被请求的工具
-为每个工具调用记录一个结果
-只要还有工具调用就重复
+assemble model request
+call the provider
+record assistant output
+execute every requested tool through the Action Broker
+record one result per tool call
+repeat while tool calls are present
 ```
 
-Action Broker属于这个循环周边的协作者。循环本身不解析设置、不直接访问文件系统、不渲染
-终端、不实现提供商重试，也不判断某个动作是否安全。
+Production behavior belongs in collaborators around this loop. The loop does not
+parse settings, access the filesystem directly, render a terminal, implement
+provider retries, or decide whether an action is safe.
 
-## 系统视图
+## System view
 
 ```mermaid
 flowchart TD
@@ -47,200 +51,256 @@ flowchart TD
     T --> D
 ```
 
-依赖向内指。前端、提供商适配器、文件系统适配器和平台沙箱代码依赖运行时契约。运行时
-包不导入前端或提供商传输格式。
+Dependencies point inward. Frontends, provider adapters, filesystem adapters,
+and platform sandbox code depend on runtime contracts. Runtime packages do not
+import a frontend or a provider wire format.
 
-## 核心概念
+## Core concepts
 
-### 引擎（Engine）
+### Engine
 
-引擎创建、加载、列出和关闭会话。它拥有进程级配置和适配器。它不拥有跨会话共享的
-对话。
+The Engine creates, loads, lists, and closes sessions. It owns process-wide
+configuration and adapters. It does not own a conversation shared by all
+sessions.
 
-引擎在M5之前保持internal。产品必须先证明嵌入方需要哪些操作，这些操作才能公开。
+The Engine is internal until M5. The product must prove which operations an
+embedder needs before those operations become public.
 
-### 会话（Session）
+### Session
 
-一个会话是"一个工作区+一份持久用户交互历史"。它拥有：
+A Session is one durable user interaction history for one workspace. It owns:
 
-- 会话记录
-- 当前运行状态
-- 不可变授权信封和数据投影配置
-- 持久运行预算计数器
-- 待处理的会话命令
-- 上下文检查点
-- 审批请求
-- 任务台账状态
-- 对已存储工具输出的引用
+- the transcript
+- the current run state
+- the immutable Authority Envelope and data-projection configuration
+- durable Run Budget counters
+- pending SessionCommands
+- context checkpoints
+- approval requests
+- task ledger state
+- references to stored tool output
 
-每个会话同时只有一个活跃运行。已保存的会话可以在新进程中恢复。
+One run is active per session. A saved session can be resumed in a new process.
 
-### 会话命令（SessionCommand）
+### SessionCommand
 
-会话命令请求会话改变状态。V2累积协议覆盖：
+A SessionCommand asks a session to change state. The cumulative V2 protocol
+covers:
 
-- 提交用户提示
-- 应答审批请求
-- 确认不确定动作
-- 排队引导
-- 取消当前工作
-- 恢复已保存的会话
-- 关闭会话
+- submit a user prompt
+- answer an approval request
+- acknowledge an indeterminate action
+- queue steering
+- cancel active work
+- resume a saved session
+- close a session
 
-M1实现提交、取消、恢复和关闭。M2增加审批响应和不确定动作确认。M4增加排队引导。
-更早的里程碑不会在其行为契约存在之前暴露某个命令。
+M1 implements submit, cancel, resume, and close. M2 adds approval responses and
+indeterminate-action acknowledgement. M4 adds queued steering. An earlier
+milestone does not expose a command before its behavioral contract exists.
 
-每个会话命令都有ID。应答某个请求的会话命令还携带该请求的ID。重复应答会被拒绝，
-且不改变状态。会话命令属于控制面输入，区别于作为预备进程动作的shell命令。
+Every SessionCommand has an ID. SessionCommands that answer a request also carry
+the request ID. Duplicate answers are rejected without changing state. A
+SessionCommand is control-plane input and is distinct from a shell command,
+which is a prepared process action.
 
-### 事件（Event）
+### Event
 
-事件报告已经发生的事实。事件使用一个可序列化信封，包含会话ID、运行ID、会话级游标、
-时间戳、种类和种类专属的载荷。游标跨运行递增，其高水位标记是持久的。
+An Event reports a fact that already occurred. Events use one serializable
+envelope containing a session ID, run ID, session-wide cursor, timestamp, kind,
+and kind-specific payload. Cursors increase across runs and their high-water mark
+is durable.
 
-事件不包含回复通道、回调、带私有内部结构的错误或仅限Go的值。前端通过发送新的会话
-命令来应答审批请求之类的事件。
+Events do not contain reply channels, callbacks, errors with private internals,
+or Go-only values. A frontend sends a new SessionCommand to answer an event such
+as an approval request.
 
-事件是观察边界，不是模型上下文的权威来源。会话记录提供持久的对话真相。
+Events are an observation boundary, not the authority for model context. The
+transcript supplies durable conversational truth.
 
-前端通过一次原子观察操作重连。引擎在持有会话观察锁的同时注册订阅者，捕获一份会话
-记录投影、当前部分助手缓冲、活跃工具状态、待处理交互和游标，然后释放游标大于快照
-游标的事件。前端按游标去重。它绝不做"快照+订阅"分离的两步操作，那会丢失审批或
-终止事件。
+Frontends reconnect through one atomic observe operation. The engine registers
+the subscriber while holding the session observation lock, captures a transcript
+projection, current partial assistant buffer, active tool state, pending
+interactions, and cursor, and then releases events whose cursor is greater than
+the snapshot cursor. A frontend deduplicates by cursor. It never performs a
+separate snapshot and subscribe sequence that could lose an approval or terminal
+event.
 
-### 会话记录（Transcript）
+### Transcript
 
-会话记录是语义上有意义的会话历史的只追加记录。它记录：
+The Transcript is the append-only record of semantically meaningful session
+history. It records:
 
-- 用户消息
-- 已完成的助手内容块
-- 提议的工具调用
-- 预备动作引用和预览
-- 权限请求和决定
-- 每个工具调用的一个结果
-- 上下文检查点引用
-- 引导和取消边界
-- 运行终止结果
+- user messages
+- completed assistant content blocks
+- proposed tool calls
+- prepared action references and previews
+- permission requests and decisions
+- one result for each tool call
+- context checkpoint references
+- steering and cancellation boundaries
+- terminal run outcomes
 
-流式文本增量可以实时发出，而不必每个token都成为一条持久记录。完整的助手块是持久
-的。这样回放依然有用，又不会把存储变成UI动画日志。
+Streaming text deltas may be emitted live without becoming one durable record per
+token. The completed assistant block is durable. This keeps replay useful without
+turning storage into a UI animation log.
 
-会话记录绝不被压缩改写。纠正通过追加一条新记录来完成，该记录取代先前的解释。
+Transcript records are never edited by compaction. Corrections append a new
+record that supersedes an earlier interpretation.
 
-### 模型上下文
+### Model context
 
-模型上下文是为一次提供商请求构建的有界投影。它结合稳定策略、项目指令、上下文检查点、
-选定的会话记录、可用工具和当前任务状态。
+Model context is a bounded projection built for one provider request. It combines
+stable policy, project instructions, a context checkpoint, selected transcript
+records, available tools, and current task state.
 
-上下文组装器可以省略或摘要旧材料。它必须保留足够的溯源，让人看出摘要覆盖了哪段
-会话记录。它绝不删除源记录。
+The Context Assembler may omit or summarize old material. It must retain enough
+provenance to show which transcript range produced a summary. It never deletes
+the source records.
 
-### 数据分类与投影
+### Data classification and projections
 
-Coragent在数据跨越会话记录、模型上下文、事件、日志或blob存储边界之前对其分类：
+Coragent classifies data before it crosses the Transcript, Model Context, Event,
+log, or blob-store boundaries:
 
-- `normal`（普通）：普通用户文本和工作区内容
-- `sensitive`（敏感）：受保护路径的内容，以及被版本化高置信度凭据检测器匹配的值
-- `runtime_secret`（运行时密钥）：提供商密钥、已配置凭据和Coragent拥有的私有能力材料
+- `normal` covers ordinary user text and workspace content
+- `sensitive` covers protected-path content and values matched by the versioned
+  high-confidence credential detector
+- `runtime_secret` covers provider keys, configured credentials, and private
+  capability material owned by Coragent
 
-运行时密钥通过专用凭据源进入适配器。它们绝不成为工具参数、进程环境变量、会话记录、
-模型内容、事件、日志或基准产物。
+Runtime secrets enter adapters through a dedicated credential source. They never
+become tool arguments, process environment variables, transcript records, model
+content, Events, logs, or benchmark artifacts.
 
-已知的敏感工作区路径——包括存活的配置文件、私钥和凭据存储——对进程沙箱一律拒绝，
-文件工具只返回脱敏后的结构化视图。其他工作区内容中的高置信度凭据匹配在任何投影或
-持久化之前完成脱敏。原始敏感工具缓冲区只存在于分类期间，绝不写入blob存储。
+Known sensitive workspace paths, including live environment files, private keys,
+and credential stores, are denied to process sandboxes and return only a
+redacted structural view through file tools. High-confidence credential matches
+in other workspace content are redacted before any projection or persistence.
+Raw sensitive tool buffers exist only for the duration of classification and are
+never written to the blob store.
 
-| 类别 | 会话记录 | 模型上下文 | 事件或前端快照 |
+| Class | Transcript | Model Context | Event or frontend snapshot |
 | --- | --- | --- | --- |
-| `normal` | 有界的语义内容 | 选定的有界内容 | 展示投影 |
-| `sensitive` | 路径、摘要、脱敏元数据和脱敏内容 | 仅脱敏内容 | 路径和脱敏提示，外加安全的结构化内容 |
-| `runtime_secret` | 永不 | 永不 | 永不 |
+| `normal` | bounded semantic content | selected bounded content | display projection |
+| `sensitive` | path, digest, redaction metadata, and redacted content | redacted content only | path and redaction notice, with safe structural content |
+| `runtime_secret` | never | never | never |
 
-用户提交即授权把普通提示文本发送给所配置的提供商。高置信度凭据匹配在持久化或提交给
-提供商之前被替换为标记，前端收到不含匹配值的警告。初始V2没有"发送已检测凭据"的
-覆盖开关；用户必须重新提交净化后的文本。
+User submission authorizes ordinary prompt text for the configured provider. A
+high-confidence credential match is replaced with a marker before persistence or
+provider submission, and the frontend receives a warning without the matched
+value. Initial V2 has no override for sending detected credentials; the user
+must resubmit sanitized text.
 
-流式助手输出在发出事件前经过增量脱敏器。包含已检测凭据材料的预备变更，在其内容成为
-预览之前就被阻止。日志包含标识符、分类、大小和摘要，但不包含用户或工具内容。
+Streaming assistant output passes through an incremental redactor before an
+Event is emitted. Prepared mutations containing detected credential material are
+blocked before their content becomes a preview. Logs contain identifiers,
+classifications, sizes, and digests, but no user or tool content.
 
-对任意未标记数据，密钥检测必然不完整。Coragent保证处理运行时自有、受保护路径和已
-检测到的密钥材料。它不声称启发式规则能识别用户可能视为机密的每一个值。
+Secret detection is necessarily incomplete for arbitrary unlabeled data.
+Coragent guarantees handling for runtime-owned, protected-path, and detected
+secret material. It does not claim that heuristics can recognize every value a
+user might consider confidential.
 
-### 提供商（Provider）
+### Provider
 
-提供商适配器在内部模型请求和一种OpenAI兼容流式协议之间转换。它报告：
+The Provider adapter translates between the internal model request and one
+OpenAI-compatible streaming protocol. It reports:
 
-- 文本增量
-- 完整工具调用
-- 端点提供时的用量
-- 终止的提供商原因
-- 分类后的失败
+- text deltas
+- complete tool calls
+- usage when the endpoint supplies it
+- a terminal provider reason
+- classified failures
 
-提供商暴露或接收显式的上下文窗口上限。Coragent不从模型名称后缀推导容量。
+The provider exposes or receives an explicit context-window limit. Coragent does
+not derive capacity from a model-name suffix.
 
-完成响应中的工具调用决定循环是否进入工具阶段。终止原因对恢复和诊断仍有用，但流式
-结束字段不是唯一的继续信号。
+Tool calls found in the completed response determine whether the loop enters the
+tool phase. A terminal reason remains useful for recovery and diagnostics, but a
+streaming finish field is not the only continuation signal.
 
-### 工具与预备动作（Tool / Prepared Action）
+### Tool and Prepared Action
 
-工具声明它面向模型的名称、用途、参数模式和执行行为。工具不自行决定自己的生效权限。
+A Tool declares its model-facing name, purpose, argument schema, and execution
+behavior. Tools do not decide their own effective authority.
 
-在动作可以请求权限或产生副作用之前，工具先创建一个预备动作。准备过程可取消且无
-副作用。预备值包含：
+Before an action can ask for permission or perform a side effect, the tool
+creates a Prepared Action. Preparation is cancellable and side-effect-free. The
+prepared value contains:
 
-- 校验后的有效参数
-- 声明的效果，如读、写、进程或网络
-- 受影响的路径
-- 有界的用户可见预览
-- 需要时的过期状态检测身份令牌
+- validated effective arguments
+- declared effects such as read, write, process, or network
+- affected workspace paths
+- a bounded user-facing preview
+- an identity token for stale-state detection when needed
 
-读操作可以使用轻量预备值。变更使用绑定身份的预备值，确保用户审批的动作就是实际提交
-的动作。
+Read operations may use a lightweight prepared value. Mutations use an
+identity-bound prepared value so the action approved by the user is the action
+that commits.
 
 ### Action Broker
 
-Action Broker是唯一的工具执行入口。它解析工具、准备动作、强制权限、执行、限制结果
-大小，并返回一个工具结果。
+The Action Broker is the only tool execution entry point. It resolves tools,
+prepares actions, enforces authority, performs execution, bounds results, and
+returns a Tool Result.
 
-没有任何工具能拿到不受限制的文件系统或进程启动器。文件工具使用限定工作区的文件系统
-服务。命令工具使用沙箱进程运行器。
+No tool receives an unrestricted filesystem or process launcher. File tools use
+a workspace-scoped filesystem service. The command tool uses the sandbox process
+runner.
 
-### 策略、权限与沙箱
+### Policy, permission, and sandbox
 
-这几层回答不同的问题：
+These layers answer different questions:
 
-- 授权信封是会话的不可变最大能力。它由硬产品策略和显式启动配置创建。
-- 生效策略决定信封中哪一部分有资格用于当前预备动作。它不能增加权限。
-- 权限决定该资格权限现在是否可被激活、是否必须由用户审批、或者该动作是否被拒绝。
-- 限定作用域的文件系统和OS沙箱在执行期间强制已批准的限制。
+- The Authority Envelope is the immutable maximum capability for the session. It
+  is created from hard product policy and explicit startup configuration.
+- Effective Policy determines which part of that envelope is eligible for the
+  prepared action. It cannot add authority.
+- Permission determines whether eligible authority may be activated now,
+  whether the user must approve it, or whether the action is denied.
+- The scoped filesystem and OS sandbox enforce the approved limits during
+  execution.
 
-权限不能扩大授权信封。未来的钩子或插件也不能扩大它。按调用授权的grant激活的是信封
-中已经存在的子集，只适用于那个精确的预备动作版本，并随该动作一起过期。扩大信封需要
-显式配置和一个新会话，而不是一次审批响应。
+Permission cannot widen the Authority Envelope. A future hook or plugin also
+cannot widen it. A per-call grant activates a subset already present in the
+envelope, applies only to the exact Prepared Action revision, and expires with
+that action. Widening the envelope requires explicit configuration and a new
+session, not an approval response.
 
-提供商传输是独立的控制面能力。只有提供商适配器能连接会话配置中固定的端点，且使用
-专用凭据源。这种连接性绝不继承给工具或进程动作，也不计入工具网络授权。
+Provider transport is a separate control-plane capability. Only the Provider
+adapter may connect to the endpoint fixed in the session configuration, using
+the dedicated credential source. That connectivity is never inherited by tools
+or process actions and does not count as a tool-network grant.
 
-初始GA只在macOS上支持进程动作，那里命令执行使用OS强制沙箱。在没有等效后端的
-平台上，命令工具在准备或审批之前就不可用。Coragent绝不回退到不受限制的执行，也
-绝不把字符串检查说成沙箱。
+Initial GA supports process actions only on macOS, where command execution uses
+an OS-enforced sandbox. On a platform without an equivalent backend, the command
+tool is unavailable before preparation or approval. Coragent never falls back to
+unrestricted execution or describes string inspection as a sandbox.
 
-进程运行器构建最小化环境，而不是转发主机环境。它只提供配置过的可执行文件搜索路径、
-locale值、会话持有的临时目录，以及由预备动作声明且被授权信封允许的变量。凭据变量和
-环境中的开发者密钥默认缺失。后端要求的系统读取和可执行路径是显式平台能力，不是不可见
-的环境访问。
+The process runner builds a minimal environment instead of forwarding the host
+environment. It supplies only configured executable search paths, locale values,
+a session-owned temporary directory, and variables declared by the Prepared
+Action and allowed by the Authority Envelope. Credential variables and ambient
+developer secrets are absent by default. Backend-required system read and
+executable paths are explicit platform capabilities, not invisible ambient
+access.
 
-### 会话与blob存储
+### Session and blob store
 
-V2用户数据放在`~/.coragent/v2/`。项目本地设置放在`.coragent/v2/`。
+V2 durable session state lives under `~/.coragent/sessions/`. Settings reuse the
+V1 paths: `~/.coragent/settings.json` and project-local `.coragent/settings.json`.
 
-会话存储持久化授权信封、数据投影版本、会话记录、动作尝试记录、预算计数器、观察游标
-和检查点；共享同一状态转换的部分以原子方式持久化。大型工具结果存放在会话拥有的、
-按内容或身份寻址的blob区域。会话记录保存有界预览和持久引用。
+The session store persists the Authority Envelope, data-projection version,
+transcript records, action-attempt records, budget counters, observation cursors,
+and checkpoints atomically where they share a state transition. Large tool
+results live in a content-addressed or identity-addressed blob area owned by the
+session. Transcript records keep a bounded preview and a durable reference.
 
-V2不修改V1数据。测试把每个持久存储替换为临时目录。
+V2 never reads or writes V1 session or transcript data. Tests replace every
+durable store with a temporary directory.
 
-## 会话状态机
+## Session state machine
 
 ```mermaid
 stateDiagram-v2
@@ -273,293 +333,351 @@ stateDiagram-v2
     Failed --> Idle: failure recorded
 ```
 
-这个图描述运行时状态，不是UI界面。状态事件报告这些转换，而状态机仍是权威。
+The diagram describes runtime states, not UI screens. Status events report these
+transitions, while the state machine remains authoritative.
 
-### 安全边界
+### Safe boundaries
 
-安全边界存在于：提供商响应关闭之后、每个工具结果记录之后、下一次提供商请求之前。
+A safe boundary exists after a provider response is closed, after each tool
+result is recorded, and before the next provider request.
 
-活跃工作期间提交的引导会被排队。引擎在下一个安全边界应用它。如果一个响应提出了多个
-工具调用、而引导停止了剩余调用，引擎在追加引导消息之前，为每个未执行的调用记录一条
-合成跳过结果。工具调用配对仍然有效。
+Steering submitted during active work is queued. The engine applies it at the
+next safe boundary. If a response proposed several tool calls and steering stops
+the remaining calls, the engine records a synthetic skipped result for each
+unexecuted call before appending the steering message. Tool-call pairing remains
+valid.
 
-修改审批响应会使旧的预备动作和审批失效。工具调用回到模式校验、准备、授权信封与生效
-策略检查、预览，以及带有新版本ID的新审批请求。只有指名那个新版本的审批才能进入
-执行。
+Revising an approval response invalidates the old Prepared Action and approval.
+The tool call returns to schema validation, preparation, Authority Envelope and
+Effective Policy checks, preview, and a new approval request with a new revision
+ID. Only an approval naming that new revision can reach execution.
 
-取消不同于引导。它立即传播到提供商、工具、沙箱运行器和进程组。引擎仍为任何无法执行
-的提议调用记录一条已取消结果。
+Cancellation is different from steering. It propagates immediately to the
+provider, tool, sandbox runner, and process group. The engine still records a
+cancelled result for any proposed call that cannot execute.
 
-## 提示词与指令组装
+## Prompt and instruction assembly
 
-提示词组装器从运行时状态构建各区块。它不会在整个会话中向一个全局字符串追加文本。
+The Prompt Assembler builds sections from runtime state. It does not append text
+to one global string throughout the session.
 
-稳定区块包括代理身份、操作规则、工具使用规则和安全策略。动态区块包括工作区事实、
-项目指令、工具目录、任务台账、上下文检查点和每次运行的指导。
+Stable sections include agent identity, operating rules, tool-use rules, and
+safety policy. Dynamic sections include workspace facts, project instructions,
+the tool catalog, task ledger, context checkpoint, and per-run guidance.
 
-稳定与动态区块保持分离，这样适配器可以使用提供商的提示词缓存，而不会掩盖动态状态。
+Stable and dynamic sections remain separate so an adapter can use provider prompt
+caching without hiding dynamic state.
 
-### 指令发现
+### Instruction discovery
 
-M1从仓库根目录经由当前工作目录发现`CLAUDE.md`和`AGENTS.md`。
+M1 discovers `CLAUDE.md` and `AGENTS.md` from the repository root through the
+active working directory.
 
-指令优先级从低到高为：
+Instruction precedence from lowest to highest is:
 
-1. 用户级偏好
-2. 仓库根目录指令
-3. 适用于当前路径的更深目录中的指令
-4. 当前明确的用户请求
-5. 硬运行时策略
+1. user-level preferences
+2. repository-root instructions
+3. instructions in deeper directories that apply to the active path
+4. the current explicit user request
+5. hard runtime policy
 
-在同一个目录内，`CLAUDE.md`先于`AGENTS.md`加载，因此当两个文件在同一作用域冲突时，
-`AGENTS.md`胜出。相同文档按内容哈希去重。加载的源及其作用域记录在会话记录中。
+Within one directory, `CLAUDE.md` loads before `AGENTS.md`, so `AGENTS.md` wins
+when both files conflict at the same scope. Identical documents are deduplicated
+by content hash. Loaded sources and their scopes are recorded in the transcript.
 
-当前用户请求不能覆盖硬安全策略。当其他指令冲突时，组装器保留源标签，让模型和用户
-能看到是哪条指令获胜。
+The current user request cannot override hard safety policy. When other
+instructions conflict, the assembler preserves source labels so the model and
+user can see which instruction won.
 
-## 上下文策略
+## Context policy
 
-上下文工作遵循固定顺序。廉价的确定性操作先于摘要模型调用执行。
+Context work follows a fixed order. Cheap deterministic operations run before a
+summary model call.
 
-1. 为每个新工具结果限界。过大的内容在替换为预览和引用之前先持久化。
-2. 移除冗余的旧模型可见记录，同时保留工具调用与工具结果的对。
-3. 把较旧的庞大工具结果替换为可重新加载的引用。
-4. 当现有检查点已覆盖所需会话记录范围时，复用它。
-5. 当请求仍超过主动阈值时，创建新的摘要检查点。
-6. 如果提供商拒绝该提示为过长，再做一次更激进的响应式压缩并重试一次。
+1. Bound every new tool result. Persist oversized content before replacing it
+   with a preview and reference.
+2. Remove redundant old model-facing records while preserving tool-call and
+   tool-result pairs.
+3. Replace older bulky tool results with reloadable references.
+4. Reuse an existing valid checkpoint when it covers the required transcript
+   range.
+5. Create a new summary checkpoint when the request still exceeds its proactive
+   threshold.
+6. If the provider rejects the prompt as too long, perform one more aggressive
+   reactive compaction and retry once.
 
-模型请求始终保留：
+The model request always preserves:
 
-- 授权信封、生效策略和当前项目指令
-- 当前用户目标和明确约束
-- 未解决的工具调用和结果
-- 当前任务台账状态
-- 预算内的近期文件和补丁上下文
-- 最新的用户与助手交换
-- 重新加载已持久化输出所需的引用
+- the Authority Envelope, Effective Policy, and active project instructions
+- the current user goal and explicit constraints
+- unresolved tool calls and results
+- current task-ledger state
+- recent file and patch context within budget
+- the latest user and assistant exchange
+- references needed to reload persisted output
 
-摘要检查点标明它们覆盖的会话记录序列范围。关键约束和任务状态既存在于结构化字段，
-也存在于叙述性文字中，这样摘要的遗漏不会静默删掉它们。
+Summary checkpoints identify the transcript sequence range they cover. Critical
+constraints and task state live in structured fields as well as prose so a
+summary omission cannot silently remove them.
 
-## Action Broker流水线
+## Action Broker pipeline
 
-每个工具调用都遵循这一顺序：
+Every tool call follows this order:
 
 ```text
-解析工具
-校验模式
-在无副作用的前提下准备有效动作
-对动作内容分类并阻止已检测的凭据材料
-推导效果、路径、身份和预览
-应用授权信封与生效策略
-应用内部执行前检查
-解析权限
-持久化一个已开始的动作尝试
-提交前立即验证预备身份
-通过限定作用域的能力或 OS 沙箱执行
-应用执行后检查
-分类并构建脱敏的会话记录、模型和展示投影
-持久化或限界大型输出
-原子地完成动作尝试并追加恰好一个工具结果
+resolve tool
+validate schema
+prepare effective action without side effects
+classify action content and block detected credential material
+derive effects, paths, identity, and preview
+apply the Authority Envelope and Effective Policy
+apply internal pre-execution checks
+resolve permission
+persist a started Action Attempt
+verify prepared identity immediately before commit
+execute through scoped capabilities or the OS sandbox
+apply post-execution inspection
+classify and build redacted transcript, model, and display projections
+persist or bound large output
+atomically finish the Action Attempt and append exactly one tool result
 ```
 
-如果执行前检查修改了参数，Broker会重新校验并准备动作。先前的预览或审批不适用于修改
-后的参数。用户修改参数时走同样的完整循环。一次修改总是产生新预览和新的审批请求。
+If a pre-execution check revises arguments, the broker validates and prepares the
+action again. A prior preview or approval does not apply to revised arguments.
+The same full loop applies when the user revises arguments. A revision always
+produces a new preview and approval request.
 
-执行后检查可以在数据投影器构建脱敏的会话记录、模型和展示形式之前注解一个结果。它不能
-声称已发生的副作用被回滚了。副作用之后的失败会如实记录部分结果。
+Post-execution inspection may annotate a result before the Data Projector builds
+its redacted transcript, model, and display forms. It cannot claim that an
+already-performed side effect was rolled back. A failure after a side effect
+records the partial outcome truthfully.
 
-### 动作日志与崩溃对账
+### Action journal and crash reconciliation
 
-操作系统无法把外部副作用与会话记录写入原子地合并。因此Coragent显式呈现不确定性，
-而不是静默重放工作。
+The operating system cannot atomically combine an external side effect with a
+transcript write. Coragent therefore makes uncertainty explicit instead of
+silently replaying work.
 
-执行前一刻，Broker持久化一条动作尝试记录，包含唯一尝试ID、工具调用ID、预备动作
-摘要、效果声明、执行前身份和`started`状态。执行后，存储在一个事务中写入终止的
-动作尝试状态及其工具结果。
+Immediately before execution, the broker durably records an Action Attempt with
+a unique attempt ID, ToolCall ID, Prepared Action digest, effect declaration,
+pre-execution identities, and `started` status. After execution, the store writes
+the terminal Action Attempt state and its ToolResult in one transaction.
 
-恢复时，在任何新模型请求之前，先对没有终止记录的`started`尝试做对账：
+On resume, a `started` attempt without a terminal record is reconciled before any
+new model request:
 
-- 读动作变为`interrupted`，模型可以再次请求
-- 确定性文件变更比较前状态和预期后状态身份；后状态完全吻合变成`recovered_success`，
-  前状态未变变成`interrupted_no_effect`，其他任何状态变成`indeterminate`
-- 进程动作变成`indeterminate`，除非执行器专属回执能证明其结果
+- a read action becomes `interrupted` and may be requested again by the model
+- a deterministic file mutation compares pre-state and expected post-state
+  identities; an exact post-state becomes `recovered_success`, an unchanged
+  pre-state becomes `interrupted_no_effect`, and any other state becomes
+  `indeterminate`
+- a process action becomes `indeterminate` unless an executor-specific receipt
+  proves its outcome
 
-Coragent绝不自动重做一次被中断的变更或进程动作。每个对账后的状态都成为与未关闭调用
-配对的那一个工具结果。不确定副作用展示给用户，并要求确认后才能继续运行。
+Coragent never automatically repeats an interrupted mutation or process action.
+Every reconciled status becomes the one ToolResult paired with the open call.
+An indeterminate side effect is shown to the user and requires acknowledgement
+before the run can continue.
 
-macOS进程运行器使用一个小型监管进程，它拥有子进程组和来自Coragent的控制通道。
-如果该通道因主进程退出而关闭，监管进程终止整个进程组。启动对账还会检查记录的进程组
-回执，并在把动作尝试报告为`indeterminate`之前终止任何幸存进程。
+The macOS process runner uses a small supervisor that owns the child process
+group and a control channel from Coragent. If that channel closes because the
+main process exits, the supervisor terminates the full group. Startup
+reconciliation also checks the recorded process-group receipt and terminates any
+survivor before reporting the Action Attempt as indeterminate.
 
-### 初始权限策略
+### Initial authority policy
 
-M1只暴露限定工作区的list、read和search工具。模型不能请求变更或命令执行。M1
-实现直接使用限定作用域的文件系统，不启动辅助进程。
+M1 exposes only workspace-scoped list, read, and search tools. The model cannot
+request mutation or command execution. M1 implementations use the scoped
+filesystem directly and do not launch helper processes.
 
-M2增加这一策略：
+M2 adds this policy:
 
-- 工作区读取无需审批
-- 工作区变更需要审批预备补丁
-- 进程动作需要审批预备命令、环境和声明的能力
-- 默认授权信封包含工作区、会话持有的临时存储，以及后端要求的系统读取和可执行路径
-- 工作区外写入和网络访问不在默认授权信封中
-- 可选外部根目录或网络端点必须在会话启动时配置；狭窄的按调用grant只能激活该项
-  已配置权限
-- grant在该预备动作完成时过期
-- 平台无法强制信封时，进程动作不可用
+- workspace reads are allowed without approval
+- workspace mutations require approval of the prepared patch
+- process actions require approval of the prepared command, environment, and
+  declared capabilities
+- the default Authority Envelope contains the workspace, session-owned temporary
+  storage, and backend-required system read and executable paths
+- outside-workspace writes and network access are absent from the default
+  Authority Envelope
+- optional external roots or network endpoints must be configured when the
+  session starts; a narrow per-call grant may activate only that configured
+  authority
+- grants expire when that prepared action finishes
+- process actions are unavailable when the platform cannot enforce the envelope
 
-持久化白名单和替代权限模式仍超出范围。
+Persistent allowlists and alternate permission modes remain out of scope.
 
-## 提供商与运行时恢复
+## Provider and runtime recovery
 
-失败在重试前先分类：
+Failures are classified before retry:
 
-| 失败 | 初始行为 | 上限 |
+| Failure | Initial behavior | Limit |
 | --- | --- | --- |
-| 速率限制、瞬时传输错误或提供商过载 | 带抖动的指数退避；尊重`Retry-After` | 初次请求后最多八次重试 |
-| 提示过长 | 响应式压缩，然后重发请求 | 一次响应式尝试 |
-| 输出长度超限 | 把配置的输出预算提高一次，然后使用有界续写 | 一次升级和三次续写 |
-| 认证或无效请求 | 以永久提供商错误停止 | 不重试 |
-| 取消 | 传播取消并记录已取消结果 | 不重试 |
-| 畸形提供商流 | 以协议错误停止 | 不重试 |
+| rate limit, transient transport error, or provider overload | exponential backoff with jitter; honor `Retry-After` | eight retries after the initial request |
+| prompt too long | reactive compaction, then repeat the request | one reactive attempt |
+| output length limit | raise the configured output budget once, then use bounded continuation | one escalation and three continuations |
+| authentication or invalid request | stop with a permanent provider error | no retry |
+| cancellation | propagate cancellation and record cancelled outcome | no retry |
+| malformed provider stream | stop with a protocol error | no retry |
 
-初始重试计划从500毫秒开始，每次失败翻倍，计算出的延迟封顶30秒，并施加20%抖动。
-服务器提供的`Retry-After`取代计算延迟，但封顶120秒。取消会中断每次等待。
+The initial retry schedule starts at 500 milliseconds, doubles after each
+failure, caps computed delays at 30 seconds, and applies 20 percent jitter. A
+server-provided `Retry-After` value replaces the computed delay but is capped at
+120 seconds. Cancellation interrupts every wait.
 
-恢复状态属于持久运行预算。重试不会追加部分助手输出，除非所选恢复方式显式把该输出
-用作续写前缀。
+Recovery state belongs to a durable Run Budget. A retry does not append partial
+assistant output unless the selected recovery explicitly uses that output as a
+continuation prefix.
 
-当重叠移除不再带来新字节时，重复续写提前停止。恢复路径绝不会在不消耗计数器的情况下
-自我调用。
+Repeated continuation stops early when overlap removal adds no new bytes. A
+recovery path never calls itself without consuming a counter.
 
-每次运行都在消耗工作之前持久化其预算。初始默认值：
+Every run persists its budget before consuming work. Initial defaults are:
 
-- 64次逻辑模型调用，包括正常轮次、压缩调用和续写
-- 96次提供商传输尝试，包括重试
-- 累计10分钟重试延迟
-- 128个提议工具调用
-- 累计60分钟活跃提供商与工具时间，不含等待人工审批的时间
-- 估计400万输入令牌和51.2万输出令牌
+- 64 logical model calls, including normal turns, compaction calls, and
+  continuations
+- 96 total provider transport attempts, including retries
+- 10 minutes of cumulative retry delay
+- 128 proposed tool calls
+- 60 minutes of cumulative active provider and tool time, excluding time waiting
+  for a human approval
+- 4 million estimated input tokens and 512,000 estimated output tokens
 
-第一个被耗尽的边界停止新工作，因此按请求的重试上限不能覆盖累计提供商尝试或重试延迟
-上限。
+The first exhausted bound stops new work, so per-request retry limits cannot
+override the cumulative provider-attempt or retry-delay limits.
 
-上下文组装器在请求前预留估计令牌，并在可用时与提供商用量对账。配置的金额上限同样是
-硬性的；在没有可信定价数据时，Coragent报告"未强制执行金额上限"，而不是猜测成本。
+The Context Assembler reserves estimated tokens before a request and reconciles
+them with provider usage when available. A configured monetary limit is also
+hard; without trusted pricing data, Coragent reports that no monetary cap is
+enforced instead of guessing cost.
 
-预算计数器、重试计数器和预留用量在进程重启后仍然存在。崩溃不能重置它们。达到任何
-边界都会记录一个可恢复的暂停结果，而不是静默开始更多工作。用户可以在保留同一会话和
-会话记录的前提下，显式地以全新运行预算继续。
+Budget counters, retry counters, and reserved usage survive process restart. A
+crash cannot reset them. Reaching any bound records a resumable paused outcome
+instead of silently starting more work. The user may explicitly continue with a
+fresh Run Budget while retaining the same session and transcript.
 
-## 工具调用配对
+## Tool-call pairing
 
-提供商协议要求每个工具调用都有一个结果。Coragent把这一点作为会话记录不变量来强制：
+Provider protocols require a result for every tool call. Coragent enforces this
+as a transcript invariant:
 
-- 成功执行记录成功结果
-- 工具错误记录错误结果
-- 权限拒绝记录已拒绝结果
-- 策略阻止记录已阻止结果
-- 过期状态检测记录已过期结果
-- 取消记录已取消结果
-- 引导为剩余调用记录跳过结果
-- 更早的非成功结果让剩余调用记录先前结果跳过结果
-- 未知工具记录未知工具结果
-- 崩溃对账记录已恢复、已中断或不确定结果
+- successful execution records a success result
+- a tool error records an error result
+- permission denial records a denied result
+- policy block records a blocked result
+- stale-state detection records a stale result
+- cancellation records a cancelled result
+- steering records skipped results for remaining calls
+- an earlier non-success result records prior-result skipped results for
+  remaining calls
+- an unknown tool records an unknown-tool result
+- crash reconciliation records recovered, interrupted, or indeterminate results
 
-工具调用按提供商顺序执行。批次在成功或恢复成功后继续。第一个非成功结果停止批次执行；
-剩余每个调用收到合成的先前结果跳过结果。下一个模型请求看到完整批次，并决定如何恢复。
+Tool calls execute in provider order. The batch continues after a success or
+recovered success. The first non-success result stops execution of the batch;
+every remaining call receives a synthetic prior-result skipped result. The next
+model request sees the complete batch and decides how to recover.
 
-不可恢复的引擎失败可能停止执行，但在会话记录被用于另一次模型请求之前，恢复或续跑
-必须用明确的已中断结果修复任何未关闭调用。
+An unrecoverable engine failure may stop execution, but recovery or resume must
+repair any open call with an explicit interrupted result before the transcript is
+used in another model request.
 
-## 前端边界
+## Frontend boundary
 
-行式CLI和后来的TUI使用同一个运行时表面：
+The line-oriented CLI and later TUI use the same runtime surface:
 
-- 发送会话命令
-- 消费事件
-- 在一个事件游标处原子地观察会话记录和待处理状态快照
+- send SessionCommands
+- consume Events
+- atomically observe a transcript and pending-state snapshot at an Event cursor
 
-前端可以格式化差异、权限请求、任务状态或错误。它不分类动作、不代用户审批、不压缩
-上下文，也不从缺失事件推断运行完成。
+A frontend may format a diff, permission request, task status, or error. It does
+not classify actions, approve on behalf of the user, compact context, or infer
+run completion from missing events.
 
-TUI在M4出现。它的第一个版本包括会话记录、工具状态、补丁预览、审批提示、任务状态、
-上下文状态、会话选择、引导和取消。主题、鼠标工作流、动画和高级检查器仍在V2发布
-边界之外。
+The TUI arrives in M4. Its first version includes the transcript, tool state,
+patch preview, approval prompt, task state, context state, session selection,
+steering, and cancellation. Themes, mouse workflows, animation, and advanced
+inspectors remain outside the V2 release boundary.
 
-## 并发
+## Concurrency
 
-到M4为止：
+Through M4:
 
-- 每个会话同时只有一个活跃运行
-- 工具调用按提供商顺序执行
-- 不同已保存会话不共享可变运行时状态
-- 取消和审批使用关联ID和幂等的会话命令处理
+- one run is active per session
+- tool calls execute sequentially in provider order
+- different saved sessions do not share mutable runtime state
+- cancellation and approval use correlation IDs and idempotent SessionCommand
+  handling
 
-后台工具、可并行的批次、子代理和常驻队友是各自独立的设计。它们不通过隐藏goroutine
-进入运行时。
+Background tools, parallel-safe batches, subagents, and persistent teammates are
+separate future designs. They do not enter the runtime through hidden goroutines.
 
-## 计划的源码布局
+## Planned source layout
 
-实现可以细化名称，但必须保留这些依赖方向：
+Implementation may refine names, but it must preserve these dependency
+directions:
 
 ```text
-cmd/coragent/              行式产品入口
-internal/engine/           会话命令循环和运行状态机
-internal/transcript/       持久记录、配对和投影
-internal/context/          请求选择与压缩
-internal/prompt/           指令发现与提示词区块
-internal/dataproj/         分类与脱敏投影
-internal/credential/       运行时密钥源
-internal/provider/openai/  OpenAI 兼容传输适配器
-internal/action/           工具目录、准备与 Action Broker
-internal/policy/           硬权限与权限决定
-internal/sandbox/          平台进程隔离
-internal/tools/            工作区读取、搜索、补丁和命令工具
-internal/store/            会话、检查点和大型输出 blob
-internal/event/            可序列化观察信封
-internal/sessioncommand/   可序列化控制消息
-tui/                       M4 前端
-pkg/coragent/              仅在 M5 创建
+cmd/coragent/              line-oriented product entry point
+internal/engine/           session command loop and run state machine
+internal/transcript/       durable records, pairing, and projections
+internal/context/          request selection and compaction
+internal/prompt/           instruction discovery and prompt sections
+internal/dataproj/         classification and redacted projections
+internal/credential/       runtime-secret sources
+internal/provider/openai/  OpenAI-compatible transport adapter
+internal/action/           tool catalog, preparation, and Action Broker
+internal/policy/           hard authority and permission decisions
+internal/sandbox/          platform process confinement
+internal/tools/            workspace read, search, patch, and command tools
+internal/store/            sessions, checkpoints, and large output blobs
+internal/event/            serializable observation envelope
+internal/sessioncommand/   serializable control messages
+tui/                       M4 frontend
+pkg/coragent/              created only in M5
 ```
 
-在M5 SDK设计获批之前，不要添加`pkg/coragent/`。
+Do not add `pkg/coragent/` before the M5 SDK design is approved.
 
-## 测试接缝
+## Testing seams
 
-每个主要边界都有一个离线替身：
+Each major boundary has an offline replacement:
 
-- 脚本化提供商发出文本、工具调用、用量和分类失败
-- 内存或临时会话记录存储支持崩溃与回放测试
-- 假Action Broker记录准备和执行，不产生副作用
-- 假权限响应器发送带关联的会话命令
-- 假时钟驱动重试和超时行为
-- 假沙箱运行器记录进程和grant请求
+- a scripted Provider emits text, tool calls, usage, and classified failures
+- an in-memory or temporary Transcript Store supports crash and replay tests
+- a fake Action Broker records preparation and execution without side effects
+- a fake Permission responder sends correlated SessionCommands
+- a fake clock drives retry and timeout behavior
+- a fake sandbox runner records process and grant requests
 
-测试必须覆盖快乐路径、永久失败、有界恢复、取消、重复会话命令、过期预备动作、通过
-`..`和符号链接逃出工作区、畸形持久记录、上下文压缩和进程清理。
+Tests must cover happy paths, permanent failures, bounded recovery, cancellation,
+duplicate SessionCommands, stale prepared actions, workspace escape through
+`..` and symlinks, malformed durable records, context compaction, and process
+cleanup.
 
-崩溃测试在每次动作尝试日志写入、副作用、结果事务、预算预留和游标检查点前后停止进程。
-观察测试让快照创建与审批、工具结果和终止事件并发竞争，并证明游标既不产生缺口也不
-产生重复状态。
+Crash tests stop the process before and after every Action Attempt journal write,
+side effect, result transaction, budget reservation, and cursor checkpoint.
+Observation tests race snapshot creation against approval, tool-result, and
+terminal events and prove that cursors produce neither gaps nor duplicate state.
 
-`benchmarks.md`中的真实模型基准度量产品行为。单元测试不能替代它，基准分数也不能
-替代运行时不变量。
+The real-model benchmark in `benchmarks.md` measures product behavior. Unit tests
+cannot replace it, and a benchmark score cannot replace runtime invariants.
 
-## 不可协商的不变量
+## Non-negotiable invariants
 
-1. 会话记录只追加，且扛得住上下文压缩。
-2. 在下一次模型请求之前，每个工具调用恰好有一个终止结果。
-3. 每个副作用都经过同一个Action Broker。
-4. 任何审批或扩展都不能超过会话授权信封。
-5. 文件和命令工具收到限定作用域的能力，而非环境权限。
-6. 事件是可序列化的事实；会话命令携带控制意图。
-7. 事件游标在整个会话中单调递增。
-8. 取消能到达每个活跃阻塞操作。
-9. 过期的预备变更不能提交。
-10. 提供商特有的传输数据不逃出它的适配器。
-11. 前端不拥有会话状态。
-12. 公开API设计等待M5基准证据。
-13. 已开始的动作尝试会被对账，绝不自动重放。
-14. 运行预算计数器在重启后仍然存在，每个恢复路径都会消耗它们。
+1. The transcript is append-only and survives context compaction.
+2. Every tool call has exactly one terminal result before the next model request.
+3. Every side effect passes through one Action Broker.
+4. No approval or extension can exceed the session Authority Envelope.
+5. File and command tools receive scoped capabilities, not ambient authority.
+6. Events are serializable facts; SessionCommands carry control intent.
+7. Event cursors are monotonic across the entire session.
+8. Cancellation reaches every active blocking operation.
+9. A stale prepared mutation cannot commit.
+10. Provider-specific wire data does not escape its adapter.
+11. Frontends do not own session state.
+12. Public API design waits for M5 benchmark evidence.
+13. A started Action Attempt is reconciled and never replayed automatically.
+14. Run Budget counters survive restart and every recovery path consumes them.
