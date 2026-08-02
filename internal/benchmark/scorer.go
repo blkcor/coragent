@@ -70,7 +70,9 @@ type Score struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
-var citationPattern = regexp.MustCompile("(?:^|[\\s(\\[`])((?:cmd|internal|docs)/[A-Za-z0-9_./-]+):(\\d+)-(\\d+)")
+// Citations accept a single line (path:12) or a line range (path:12-26); a
+// single line is treated as a range whose end equals its start.
+var citationPattern = regexp.MustCompile("(?:^|[\\s(\\[`])((?:cmd|internal|docs)/[A-Za-z0-9_./-]+):(\\d+)(?:-(\\d+))?")
 
 type citation struct {
 	path       string
@@ -153,7 +155,10 @@ func parseCitations(answer string) []citation {
 	var out []citation
 	for _, match := range citationPattern.FindAllStringSubmatch(answer, -1) {
 		start, _ := strconv.Atoi(match[2])
-		end, _ := strconv.Atoi(match[3])
+		end := start
+		if match[3] != "" {
+			end, _ = strconv.Atoi(match[3])
+		}
 		out = append(out, citation{path: match[1], start: start, end: end})
 	}
 	return out

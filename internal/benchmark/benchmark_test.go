@@ -666,6 +666,10 @@ func TestInvestigationScorersAcceptGoldensAndRejectDefects(t *testing.T) {
 	if score := ScoreInvestigation(goldens[0], badCitation, nil, fixture); score.Outcome != OutcomeTaskFail {
 		t.Fatalf("bad citation score = %+v", score)
 	}
+	singleLine := strings.Replace(answers["I01"], "config.go:34-91", "config.go:40 internal/config/config.go:80", 1)
+	if score := ScoreInvestigation(goldens[0], singleLine, nil, fixture); score.Outcome != OutcomePass {
+		t.Fatalf("single-line citation score = %+v", score)
+	}
 }
 
 func fileDigests(t *testing.T, root string) map[string]string {
