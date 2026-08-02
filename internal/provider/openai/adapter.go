@@ -185,14 +185,14 @@ func (a *Adapter) Stream(ctx context.Context, req provider.Request, onText func(
 
 type wireMessage struct {
 	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
+	Content    string         `json:"content"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 }
 
 type wireFunction struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type wireToolCall struct {
@@ -250,7 +250,7 @@ func (a *Adapter) buildRequest(req provider.Request) (wireRequest, error) {
 			if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) {
 				return wireRequest{}, errors.New("invalid tool call context")
 			}
-			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{ID: call.ID, Type: "function", Function: wireFunction{Name: call.Name, Arguments: call.Arguments}})
+			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{ID: call.ID, Type: "function", Function: wireFunction{Name: call.Name, Arguments: string(call.Arguments)}})
 		}
 		w.Messages = append(w.Messages, wm)
 	}
