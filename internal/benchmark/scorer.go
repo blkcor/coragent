@@ -95,9 +95,16 @@ func ScoreInvestigation(golden Golden, answer string, records []transcript.Recor
 		}
 		position = index
 	}
-	for _, term := range append(append([]string(nil), golden.RequiredTerms...), golden.RequiredGroups...) {
+	for _, term := range golden.RequiredTerms {
 		if !strings.Contains(lower, strings.ToLower(term)) {
-			reasons = append(reasons, "missing required term or group: "+term)
+			reasons = append(reasons, "missing required term: "+term)
+		}
+	}
+	for _, group := range golden.RequiredGroups {
+		// A required group must structure the answer as a section heading
+		// ("Group the impact by API, ..."), not merely appear as prose.
+		if !strings.Contains(lower, strings.ToLower(group)+":") {
+			reasons = append(reasons, "missing group heading: "+group)
 		}
 	}
 	for _, hedge := range []string{"probably", "maybe", "I guess"} {

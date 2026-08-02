@@ -511,6 +511,61 @@ func TestFrozenFixtureDigestAndCopyIsolation(t *testing.T) {
 	}
 }
 
+func TestFixtureManifestDigestChangesOnBaseFileMutation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "one.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("alpha\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := DigestTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A base file content change must change the manifest digest.
+	if err := os.WriteFile(filepath.Join(root, "a", "one.go"), []byte("package a\n\nfunc X() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterContent, err := DigestTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterContent == before {
+		t.Fatal("digest unchanged after a base file content change")
+	}
+
+	// A base file name change must also change the manifest digest.
+	if err := os.Rename(filepath.Join(root, "b.txt"), filepath.Join(root, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	afterRename, err := DigestTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRename == afterContent {
+		t.Fatal("digest unchanged after a base file rename")
+	}
+
+	// ValidateFrozenBase must reject a mutated tree against a manifest that
+	// carries the pre-mutation digest.
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	manifestData, err := json.Marshal(Manifest{BaseVersion: BaseVersion, SHA256: before})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateFrozenBase(root, manifestPath); err == nil {
+		t.Fatal("ValidateFrozenBase accepted a mutated base tree")
+	}
+}
+
 func TestWorkspaceDiffCapturesContentModeEmptyDirectoryAndSymlinkChanges(t *testing.T) {
 	fixture, _, _ := repoPaths(t)
 	baseDigest, err := DigestTree(fixture)
@@ -669,6 +724,13 @@ func TestInvestigationScorersAcceptGoldensAndRejectDefects(t *testing.T) {
 	singleLine := strings.Replace(answers["I01"], "config.go:34-91", "config.go:40 internal/config/config.go:80", 1)
 	if score := ScoreInvestigation(goldens[0], singleLine, nil, fixture); score.Outcome != OutcomePass {
 		t.Fatalf("single-line citation score = %+v", score)
+	}
+	// I04 requires grouping by API, persistence, CLI rendering, and tests.
+	// An answer that names all four groups but never structures them as
+	// section headings must fail, even though every citation is present.
+	wrongGrouping := "API, persistence, CLI rendering, and tests are all affected. Job.Status and the queued value change in internal/jobs/model.go:14-20 and internal/jobs/service.go:35-36. JobRecord.Status and conversion change in internal/jobs/storage.go:12-25. Status formatting changes at cmd/mercury/main.go:79-80. Queued assertions change at internal/jobs/service_test.go:14-27 and cmd/mercury/main_test.go:38-46."
+	if score := ScoreInvestigation(goldens[3], wrongGrouping, nil, fixture); score.Outcome != OutcomeTaskFail {
+		t.Fatalf("wrong-grouping score = %+v", score)
 	}
 }
 
