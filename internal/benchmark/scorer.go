@@ -70,7 +70,7 @@ type Score struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
-var citationPattern = regexp.MustCompile(`(?:^|[\s(\[])((?:cmd|internal|docs)/[A-Za-z0-9_./-]+):(\d+)-(\d+)`)
+var citationPattern = regexp.MustCompile("(?:^|[\\s(\\[`])((?:cmd|internal|docs)/[A-Za-z0-9_./-]+):(\\d+)-(\\d+)")
 
 type citation struct {
 	path       string
