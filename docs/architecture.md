@@ -81,6 +81,11 @@ A Session is one durable user interaction history for one workspace. It owns:
 - references to stored tool output
 
 One run is active per session. A saved session can be resumed in a new process.
+The durable manifest binds both the canonical workspace path and the platform
+filesystem object identity (device and inode where available, plus birth time
+on the initial macOS platform). Replacing a directory at the same path on
+macOS therefore fails closed before instruction discovery or model context
+assembly.
 
 ### SessionCommand
 
@@ -216,6 +221,15 @@ OpenAI-compatible streaming protocol. It reports:
 The provider exposes or receives an explicit context-window limit. Coragent does
 not derive capacity from a model-name suffix.
 
+Provider transport authority is fixed by trusted startup configuration. A
+workspace-local settings file cannot override the endpoint or select the
+environment variable that supplies its credential. The HTTP adapter rejects
+non-loopback plaintext endpoints and never follows redirects. Each durable
+session binds the non-secret digest of adapter, wire protocol, endpoint,
+credential-source identity, immutable model identifier, explicit limits,
+sampling/tool settings, user preferences, and prompt version. Resume fails
+closed when that binding differs from the current runtime.
+
 Tool calls found in the completed response determine whether the loop enters the
 tool phase. A terminal reason remains useful for recovery and diagnostics, but a
 streaming finish field is not the only continuation signal.
@@ -297,8 +311,9 @@ and checkpoints atomically where they share a state transition. Large tool
 results live in a content-addressed or identity-addressed blob area owned by the
 session. Transcript records keep a bounded preview and a durable reference.
 
-V2 never reads or writes V1 session or transcript data. Tests replace every
-durable store with a temporary directory.
+V1 is archived. V2 never interprets, migrates, rewrites, or deletes unknown
+legacy session or transcript data it encounters under the shared root. Tests
+replace every durable store with a temporary directory.
 
 ## Session state machine
 
@@ -328,13 +343,23 @@ stateDiagram-v2
     Recovering --> Assembling: bounded recovery succeeds
     Recovering --> Failed: recovery exhausted
     Recovering --> Cancelling: cancel command
-    Cancelling --> Idle: cancellation recorded
-    Assembling --> Failed: corrupt durable state
-    Failed --> Idle: failure recorded
+	Cancelling --> Idle: cancellation recorded
+	Assembling --> Failed: corrupt durable state
+	Failed --> Idle: failure recorded
+	Consulting --> Faulted: terminal facts cannot be persisted
+	PreparingAction --> Faulted: terminal facts cannot be persisted
+	Cancelling --> Faulted: terminal facts cannot be persisted
+	Faulted --> [*]: close subscribers and restart for reconciliation
 ```
 
 The diagram describes runtime states, not UI screens. Status events report these
 transitions, while the state machine remains authoritative.
+
+`Faulted` is fail-closed. The process rejects every later SessionCommand, closes
+frontend subscriptions, and preserves the durable active-run marker. A new
+process reconciles the incomplete terminal boundary before it accepts another
+turn; the failed process never publishes a terminal Event that it could not
+finish durably.
 
 ### Safe boundaries
 
@@ -384,6 +409,10 @@ Instruction precedence from lowest to highest is:
 Within one directory, `CLAUDE.md` loads before `AGENTS.md`, so `AGENTS.md` wins
 when both files conflict at the same scope. Identical documents are deduplicated
 by content hash. Loaded sources and their scopes are recorded in the transcript.
+Discovery is repeated at the start of every submitted run, so a long-lived
+process uses and records the instruction files that actually exist for that
+turn. Instruction reads reject every symlink component before content
+classification.
 
 The current user request cannot override hard safety policy. When other
 instructions conflict, the assembler preserves source labels so the model and

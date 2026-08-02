@@ -1,0 +1,5 @@
+{
+  "id": "cmd-close-1",
+  "kind": "close",
+  "payload": {}
+}

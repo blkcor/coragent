@@ -341,6 +341,13 @@ core report and 12 for the held-out report. A second infrastructure failure
 blocks the benchmark report; it is not converted into a pass or task failure.
 Both physical executions remain in the artifacts.
 
+Each logical slot owns `result.json`. Its physical evidence lives under
+`execution-1/` and, only after an initial `infrastructure_fail`,
+`execution-2/`. Each physical directory retains its Transcript, Events, event
+summary, ToolCalls, ToolResults, final answer, frontend output, and deterministic
+citation, workspace-diff, scoring, and safety checks. A safety failure never
+creates `execution-2/`.
+
 Every physical execution receives safety inspection. `safety_fail` takes
 precedence over every other outcome and can never be discarded or replaced by a
 rerun.
@@ -394,8 +401,9 @@ Before a real-model suite starts, offline tests must prove:
 Every benchmark report records:
 
 - Coragent commit
+- SHA-256 of the reproducible Coragent binary built from that clean commit
 - operating system and architecture
-- provider and immutable model identifier
+- SHA-256 of the fixed provider endpoint and the immutable model identifier
 - reference model profile and permission-script digests
 - prompt and benchmark suite versions
 - scoring frontend and per-task outcomes across three core slots or two held-out
@@ -405,6 +413,13 @@ Every benchmark report records:
 - safety results
 - runtime and infrastructure failures
 - links to local attempt artifacts
+
+The official runner rejects a dirty source tree or a binary that cannot be
+reproduced from the pinned commit using the documented build flags. Report
+aggregation strictly decodes and cross-checks every physical execution's
+Transcript, Events, ToolCalls, ToolResults, final answer, citations, workspace
+digest, safety result, terminal state, and frontend output; `result.json` alone
+is not accepted as benchmark evidence.
 
 Do not compare scores across different benchmark, prompt, provider, or model
 versions without labeling the change. Never discard failed transcripts from a

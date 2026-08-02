@@ -1,0 +1,11 @@
+{
+  "id": "I03",
+  "prompt": "Explain why files under `.tmp/`, vendor directories, and hidden nested directories do or do not appear in Mercury discovery results. Identify the rules and their tests.",
+  "ordered_terms": [],
+  "required_terms": [".tmp", "vendor", "hidden", "nested", "root", "before", "extension"],
+  "required_groups": [],
+  "locations": [
+    {"path":"internal/discovery/discovery.go","start":28,"end":42},
+    {"path":"internal/discovery/discovery_test.go","start":10,"end":31}
+  ]
+}

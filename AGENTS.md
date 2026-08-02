@@ -217,4 +217,6 @@ versioning.
   expected to be superseded.
 - Durable session state lives under `~/.coragent/sessions/`.
 - Tests must never read or modify real user state.
-- Rollback to V1 must not require a data migration or deletion.
+- V1 is archived and is not a product rollback target. Unknown or legacy data
+  under the shared settings and session roots is never migrated, rewritten, or
+  deleted automatically.

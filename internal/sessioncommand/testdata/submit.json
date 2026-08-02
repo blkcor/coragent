@@ -1,0 +1,7 @@
+{
+  "id": "cmd-submit-1",
+  "kind": "submit",
+  "payload": {
+    "prompt": "explain what main.go does"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "session_id": "sess-fixture",
+  "run_id": "run-3",
+  "cursor": 5,
+  "time": "2026-01-01T00:00:05Z",
+  "kind": "run_cancelled",
+  "payload": {}
+}

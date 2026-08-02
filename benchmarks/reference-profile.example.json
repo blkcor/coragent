@@ -1,0 +1,21 @@
+{
+  "profile_version": "m1-reference-profile-v1",
+  "provider_adapter": "openai-chat-completions",
+  "wire_protocol_version": "openai-chat-completions-sse-v1",
+  "model_snapshot": "REPLACE_WITH_IMMUTABLE_MODEL_SNAPSHOT",
+  "context_window": 32000,
+  "max_output_tokens": 8000,
+  "temperature": 0,
+  "seed": 1,
+  "tool_choice": "auto",
+  "prompt_version": "m1-prompt-v1",
+  "recovery_version": "m1-retry-v1",
+  "budget_version": "m1-budget-v1",
+  "projection_version": "data-projection-v2",
+  "detector_version": "credential-detector-v2",
+  "capabilities": {
+    "streaming": true,
+    "tool_calls": true,
+    "tool_result_continuation": true
+  }
+}

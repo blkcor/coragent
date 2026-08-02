@@ -1,0 +1,15 @@
+{
+  "id": "I04",
+  "prompt": "If `jobs.Status` changes from a string to a closed enum, list every production and test location that must change. Group the impact by API, persistence, CLI rendering, and tests. Do not edit files.",
+  "ordered_terms": [],
+  "required_terms": ["Job.Status", "JobRecord.Status", "queued"],
+  "required_groups": ["API", "persistence", "CLI rendering", "tests"],
+  "locations": [
+    {"path":"internal/jobs/model.go","start":14,"end":20},
+    {"path":"internal/jobs/storage.go","start":12,"end":25},
+    {"path":"internal/jobs/service.go","start":35,"end":36},
+    {"path":"cmd/mercury/main.go","start":79,"end":80},
+    {"path":"internal/jobs/service_test.go","start":14,"end":27},
+    {"path":"cmd/mercury/main_test.go","start":38,"end":46}
+  ]
+}

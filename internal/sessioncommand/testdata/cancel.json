@@ -1,0 +1,5 @@
+{
+  "id": "cmd-cancel-1",
+  "kind": "cancel",
+  "payload": {}
+}
