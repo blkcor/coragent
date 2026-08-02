@@ -65,6 +65,58 @@ func TestInstructionDiscoveryPrecedenceScopeAndDedup(t *testing.T) {
 	}
 }
 
+// TestInstructionDiscoveryAgentsOverridesClaudeSameDir proves AGENTS.md
+// outranks CLAUDE.md at the same directory scope, and a deeper scope
+// overrides a root conflict, so contradictory guidance resolves to the
+// higher-precedence document.
+func TestInstructionDiscoveryAgentsOverridesClaudeSameDir(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		t.Helper()
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("CLAUDE.md", "root: always use tabs")
+	write("AGENTS.md", "root: always use spaces")
+	write("pkg/CLAUDE.md", "pkg: always use tabs")
+	write("pkg/AGENTS.md", "pkg: always use spaces")
+	w, err := workspace.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	docs, err := DiscoverInstructions(context.Background(), w, "pkg", dataproj.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 4 {
+		t.Fatalf("docs = %+v", docs)
+	}
+	bySource := make(map[string]Instruction)
+	for _, doc := range docs {
+		bySource[doc.Sources[0]] = doc
+	}
+	if bySource["AGENTS.md"].Precedence <= bySource["CLAUDE.md"].Precedence {
+		t.Errorf("root AGENTS.md precedence %d not above CLAUDE.md %d", bySource["AGENTS.md"].Precedence, bySource["CLAUDE.md"].Precedence)
+	}
+	if bySource["pkg/AGENTS.md"].Precedence <= bySource["pkg/CLAUDE.md"].Precedence {
+		t.Errorf("pkg AGENTS.md precedence %d not above CLAUDE.md %d", bySource["pkg/AGENTS.md"].Precedence, bySource["pkg/CLAUDE.md"].Precedence)
+	}
+	if bySource["pkg/CLAUDE.md"].Precedence <= bySource["CLAUDE.md"].Precedence {
+		t.Errorf("pkg CLAUDE.md precedence %d not above root CLAUDE.md %d", bySource["pkg/CLAUDE.md"].Precedence, bySource["CLAUDE.md"].Precedence)
+	}
+	for i := 1; i < len(docs); i++ {
+		if docs[i].Precedence < docs[i-1].Precedence {
+			t.Errorf("docs not low-to-high at %d: %+v", i, docs)
+		}
+	}
+}
+
 func TestInstructionDiscoveryRejectsSymlinkAndRedactsWholePrivateKey(t *testing.T) {
 	t.Run("symlink", func(t *testing.T) {
 		dir := t.TempDir()

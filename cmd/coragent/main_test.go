@@ -325,6 +325,39 @@ func TestCLI_OperatingSystemInterruptCancelsAndReturnsToIdle(t *testing.T) {
 	}
 }
 
+// TestCLI_CtrlDWhileIdleExitsWithoutClosingSession proves an EOF (Ctrl-D) at
+// the idle prompt exits the CLI cleanly and leaves the created session open.
+func TestCLI_CtrlDWhileIdleExitsWithoutClosingSession(t *testing.T) {
+	home := t.TempDir()
+	workspace, err := filepath.Abs("../../testdata/benchmark-repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no Provider request is expected while exiting idle")
+		http.Error(w, "unexpected request", http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+	writeCLISettings(t, home, server.URL)
+
+	// Empty stdin is an immediate EOF at the idle prompt (Ctrl-D).
+	stdout, stderr, runErr := runCLIProcess(t, home, "", "-C", workspace)
+	if runErr != nil {
+		t.Fatalf("idle exit: %v\nstdout=%s\nstderr=%s", runErr, stdout, stderr)
+	}
+	match := regexp.MustCompile(`session (sess-[0-9a-f]+)`).FindStringSubmatch(stdout)
+	if len(match) != 2 {
+		t.Fatalf("session ID absent from idle output: %s", stdout)
+	}
+	sessionID := match[1]
+
+	// The idle exit must not close the session; it stays open for resume.
+	stdout, stderr, runErr = runCLIProcess(t, home, "", "sessions")
+	if runErr != nil || !strings.Contains(stdout, sessionID+"\topen") {
+		t.Fatalf("sessions after idle exit: %v\nstdout=%s\nstderr=%s", runErr, stdout, stderr)
+	}
+}
+
 // TestCLIProcessHelper is launched by TestCLI_ActualProcessExitResumeAndFollowUpReads
 // so every lifecycle transition crosses a real process boundary.
 func TestCLIProcessHelper(t *testing.T) {

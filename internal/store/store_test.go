@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/blkcor/coragent/internal/event"
+	"github.com/blkcor/coragent/internal/platform/fileid"
 	"github.com/blkcor/coragent/internal/transcript"
 )
 
@@ -35,6 +36,49 @@ func createTestSession(t *testing.T) (*Session, string) {
 		t.Fatalf("Create: %v", err)
 	}
 	return s, root
+}
+
+func TestCreateManifestRecordsWorkspaceIdentityAuthorityAndCursor(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	s, err := Create(root, "sess-manifest", workspace, "projection-v9", testProviderBinding(), testTime)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m := s.Manifest()
+	if m.FormatVersion != FormatVersion {
+		t.Errorf("format version = %d, want %d", m.FormatVersion, FormatVersion)
+	}
+	if m.SessionID != "sess-manifest" {
+		t.Errorf("session id = %q", m.SessionID)
+	}
+	cleanWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanWorkspace, err = filepath.Abs(cleanWorkspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Workspace != cleanWorkspace {
+		t.Errorf("workspace = %q, want %q", m.Workspace, cleanWorkspace)
+	}
+	info, err := os.Stat(cleanWorkspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.WorkspaceIdentity != fileid.FromInfo(info) {
+		t.Errorf("workspace identity = %q", m.WorkspaceIdentity)
+	}
+	if m.ProjectionVersion != "projection-v9" {
+		t.Errorf("projection version = %q, want projection-v9", m.ProjectionVersion)
+	}
+	if !m.Authority.WorkspaceRead {
+		t.Error("authority is not workspace read-only")
+	}
+	if m.EventCursor != 0 || m.TranscriptSeq != 0 {
+		t.Errorf("initial cursor = %d, transcript seq = %d, want 0", m.EventCursor, m.TranscriptSeq)
+	}
 }
 
 func TestCreateAppendReopen(t *testing.T) {
@@ -158,6 +202,16 @@ func TestPartialTranscriptRecordFailsClosed(t *testing.T) {
 	}
 	if _, err := Open(root, "sess-1"); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open partial = %v", err)
+	}
+}
+
+func TestPartialEventsRecordFailsClosed(t *testing.T) {
+	s, root := createTestSession(t)
+	if err := os.WriteFile(filepath.Join(s.dir, eventsName), []byte(`{"cursor":1`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root, "sess-1"); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open partial events = %v", err)
 	}
 }
 

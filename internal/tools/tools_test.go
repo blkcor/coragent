@@ -231,6 +231,40 @@ func TestListBoundsContinuationAndAllToolPathPolicies(t *testing.T) {
 	}
 }
 
+func TestReadExactThousandLineBoundary(t *testing.T) {
+	dir, broker := setupBroker(t)
+	writeLines := func(name string, count int) {
+		t.Helper()
+		var content strings.Builder
+		for range count {
+			content.WriteString("line\n")
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeLines("exact.txt", 1000)
+	exact := broker.Execute(context.Background(), call("read-1000", "read", `{"path":"exact.txt"}`))
+	if exact.Outcome != transcript.ToolResultSuccess || strings.Contains(exact.Content, "truncated=true") {
+		t.Fatalf("1000-line read truncated: %+v", exact)
+	}
+	if count := strings.Count(exact.Content, ": line"); count != 1000 {
+		t.Fatalf("1000-line read entries = %d, want 1000", count)
+	}
+
+	writeLines("over.txt", 1001)
+	over := broker.Execute(context.Background(), call("read-1001", "read", `{"path":"over.txt"}`))
+	if over.Outcome != transcript.ToolResultSuccess || !strings.Contains(over.Content, "truncated=true") {
+		t.Fatalf("1001-line read not truncated: %+v", over)
+	}
+	if count := strings.Count(over.Content, ": line"); count != 1000 {
+		t.Fatalf("1001-line read entries = %d, want 1000", count)
+	}
+	if !strings.Contains(over.Content, "start_line=1001") {
+		t.Fatalf("1001-line read continuation hint absent: %s", over.Content[len(over.Content)-80:])
+	}
+}
+
 func TestSearchBoundsAndNonTextInputs(t *testing.T) {
 	dir, broker := setupBroker(t)
 	var matches strings.Builder

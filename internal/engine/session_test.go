@@ -221,6 +221,54 @@ func TestSubmitProviderFailure(t *testing.T) {
 	}
 }
 
+// TestNonRetryableFailuresDoNotRetry proves malformed stream, context
+// overflow, and output truncation never enter the retry path: the scripted
+// recovery turn is never requested and the run fails with its typed cause.
+func TestNonRetryableFailuresDoNotRetry(t *testing.T) {
+	cases := []struct {
+		name  string
+		class provider.FailureClass
+		cause event.FailureCause
+	}{
+		{name: "malformed_stream", class: provider.ClassProtocol, cause: event.CauseProviderProtocol},
+		{name: "context_overflow", class: provider.ClassContextOverflow, cause: event.CauseContextLimit},
+		{name: "output_truncation", class: provider.ClassOutputLimit, cause: event.CauseProviderOutput},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := provider.NewScripted(
+				provider.Turn{Fail: &provider.Failure{Class: tc.class, Message: "must not retry " + tc.name}},
+				provider.Turn{Text: "must never be requested"},
+			)
+			s := newSession(t, fake)
+
+			if err := s.Apply(context.Background(), submitCmd(t, "cmd-1", "explain")); err != nil {
+				t.Fatalf("Apply submit: %v", err)
+			}
+			waitIdle(t, s)
+
+			if got := len(fake.Requests()); got != 1 {
+				t.Fatalf("provider requests = %d, want 1 (no retry)", got)
+			}
+			terms := terminalKinds(s.Events())
+			if len(terms) != 1 || terms[0] != event.KindRunFailed {
+				t.Fatalf("terminal events = %v, want exactly one run_failed", terms)
+			}
+			evs := s.Events()
+			var failed event.RunFailedPayload
+			if err := evs[len(evs)-1].DecodePayload(&failed); err != nil {
+				t.Fatalf("decode run_failed: %v", err)
+			}
+			if failed.Cause != tc.cause {
+				t.Errorf("cause = %q, want %q", failed.Cause, tc.cause)
+			}
+			if s.State() != engine.StateIdle {
+				t.Errorf("state = %q, want idle", s.State())
+			}
+		})
+	}
+}
+
 // TestCancelActiveRun proves cancellation propagates through the provider
 // via context and the run still ends with exactly one terminal event.
 func TestCancelActiveRun(t *testing.T) {
