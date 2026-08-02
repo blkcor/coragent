@@ -235,6 +235,7 @@ func Open(root, id string) (*Session, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("%w: session entry is not a real directory", ErrCorrupt)
 	}
+	//nolint:gosec // dir is cleanRoot/id where id passed validateSessionID
 	data, err := os.ReadFile(filepath.Join(dir, manifestName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -573,6 +574,7 @@ func appendJSONLines[T any](path string, values []T) error {
 			return fmt.Errorf("store: encode log record: %w", err)
 		}
 	}
+	//nolint:gosec // path is under a validated session directory
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("store: open log: %w", err)
@@ -592,6 +594,7 @@ func appendJSONLines[T any](path string, values []T) error {
 }
 
 func readJSONLines[T any](path string) ([]T, error) {
+	//nolint:gosec // path is under a validated session directory
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -617,6 +620,7 @@ func readJSONLines[T any](path string) ([]T, error) {
 	}
 	// Scanner accepts a final line without newline. Treat that as a partial
 	// append so a torn record can never appear valid.
+	//nolint:gosec // path is under a validated session directory
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("store: inspect log: %w", err)

@@ -1,0 +1,39 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+    - whitespace
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer overflow conversions: reviewed as in-range in this codebase
+        - G104 # errors already handled by callers
+        - G402 # TLS min version: M1 has no TLS handshake configuration
+        - G404 # weak random source: crypto/rand used where security matters
+  exclusions:
+    rules:
+      # Test code writes only to t.TempDir() workspaces with fixed fixture
+      # paths and launches its own binary for subprocess scenarios. These are
+      # controlled by the test, not by external input, so gosec's taint and
+      # permission heuristics report false positives here.
+      - path: _test\.go$
+        linters:
+          - gosec
+      # internal/benchmark is offline harness tooling: it reads operator-owned
+      # fixture, task-pack, and artifact files, copies the frozen Mercury base
+      # into temp workspaces, and launches git/go/the pinned binary. It has no
+      # untrusted input surface, so gosec's file-inclusion and subprocess
+      # heuristics report only by-design behavior here. The product packages
+      # (internal/engine, internal/tools, internal/store, ...) remain fully
+      # covered by gosec.
+      - path: internal/benchmark/
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt

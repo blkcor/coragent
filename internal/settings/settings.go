@@ -68,6 +68,7 @@ func (s Settings) Validate() error {
 }
 
 func loadOne(name string) (Settings, error) {
+	//nolint:gosec // reads the operator-selected settings file path
 	data, err := os.ReadFile(name)
 	if errors.Is(err, os.ErrNotExist) {
 		return Settings{}, nil

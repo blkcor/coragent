@@ -61,7 +61,6 @@ func TestInterruptedRunCrashMatrixBeforeAndAfterDurableBoundaries(t *testing.T) 
 		if err := durable.AppendEvent(terminal); err != nil {
 			t.Fatal(err)
 		}
-
 	}
 	phases := []phase{
 		{name: "before_transcript_append", prepare: func(*testing.T, *store.Session, string) {}},
