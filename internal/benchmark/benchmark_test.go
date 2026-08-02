@@ -47,7 +47,7 @@ func TestReferenceProfileRejectsMovingAliasAndPlaceholder(t *testing.T) {
 	if err := profile.Validate(); err != nil {
 		t.Fatalf("valid profile: %v", err)
 	}
-	for _, model := range []string{"gpt-4.1", "gpt-5", "prod-deployment", "model-latest", "REPLACE_WITH_IMMUTABLE_MODEL_SNAPSHOT"} {
+	for _, model := range []string{"gpt-4.1", "gpt-5", "prod-deployment", "model-latest", "deepseek-v4-flash", "REPLACE_WITH_IMMUTABLE_MODEL_SNAPSHOT"} {
 		profile.ModelSnapshot = model
 		if err := profile.Validate(); err == nil {
 			t.Fatalf("Validate accepted %q", model)

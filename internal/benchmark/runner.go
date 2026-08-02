@@ -104,12 +104,6 @@ func movingModelAlias(model string) bool {
 	if strings.HasSuffix(lower, "-latest") || lower == "latest" || strings.Contains(lower, "-rolling") {
 		return true
 	}
-	// TEMP(local-deepseek-run): trust the operator-pinned explicit DeepSeek
-	// deployment names as immutable snapshots for the local benchmark run.
-	// Restore the revision-marker check after the run.
-	if lower == "deepseek-v4-flash" || lower == "deepseek-v4-pro" {
-		return false
-	}
 	// A declared snapshot must carry independently inspectable revision
 	// material: a calendar snapshot or a long hexadecimal deployment digest.
 	// A descriptive alias such as "prod" or "gpt-5" is not immutable evidence.
