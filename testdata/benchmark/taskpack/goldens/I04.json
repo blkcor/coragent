@@ -1,6 +1,6 @@
 {
   "id": "I04",
-  "prompt": "If `jobs.Status` changes from a string to a closed enum, list every production and test location that must change. Group the impact by API, persistence, CLI rendering, and tests. Do not edit files.",
+  "prompt": "If `jobs.Status` changes from a string to a closed enum, list every production and test location that must change. Group the impact by API, persistence, CLI rendering, and tests. Do not edit files. Every citation must use a full workspace-relative path with line numbers, and the affected symbols must be named precisely (for example `Job.Status`, `JobRecord.Status`).",
   "ordered_terms": [],
   "required_terms": ["Job.Status", "JobRecord.Status", "queued"],
   "required_groups": ["API", "persistence", "CLI rendering", "tests"],
