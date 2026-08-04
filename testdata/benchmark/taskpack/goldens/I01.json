@@ -1,0 +1,12 @@
+{
+  "id": "I01",
+  "prompt": "Determine how Mercury resolves default, user, project, environment, and command-line configuration. Report the precedence from lowest to highest and cite the implementing files and line ranges. Every citation must use a full workspace-relative path with line numbers (for example `internal/config/config.go:34-91`).",
+  "ordered_terms": ["default", "user", "project", "environment", "command-line"],
+  "required_terms": ["load", "validation", "after"],
+  "required_groups": [],
+  "locations": [
+    {"path":"internal/config/config.go","start":34,"end":73},
+    {"path":"internal/config/config.go","start":76,"end":91},
+    {"path":"internal/config/config_test.go","start":10,"end":39}
+  ]
+}

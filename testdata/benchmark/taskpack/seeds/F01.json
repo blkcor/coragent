@@ -1,0 +1,8 @@
+{
+  "id": "F01",
+  "path": "internal/worker/worker.go",
+  "old": "killErr := proc.KillGroup()",
+  "new": "killErr := proc.KillProcess()",
+  "focused_test": "./internal/worker",
+  "test_name": "TestRunnerCancelsFullProcessGroup"
+}

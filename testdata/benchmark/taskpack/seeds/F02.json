@@ -1,0 +1,8 @@
+{
+  "id": "F02",
+  "path": "internal/archive/archive.go",
+  "old": "resolvedParent, err := filepath.EvalSymlinks(existingParent)",
+  "new": "resolvedParent, err := filepath.Abs(existingParent)",
+  "focused_test": "./internal/archive",
+  "test_name": "TestExtractRejectsParentSymlinkAtCommit"
+}

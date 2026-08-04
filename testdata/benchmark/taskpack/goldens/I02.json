@@ -1,0 +1,13 @@
+{
+  "id": "I02",
+  "prompt": "Trace a job from the CLI `submit` command through validation, service logic, and storage. Identify where the job ID is created and where duplicate requests are rejected. Cite the path in execution order. Every citation must use a full workspace-relative path with line numbers (for example `internal/jobs/service.go:35`), and the trace must narrate each step strictly in execution order without referencing symbols of later steps before they occur.",
+  "ordered_terms": ["runSubmit", "ValidateSubmit", "Service.Submit", "FindByRequestID", "NewID", "Save"],
+  "required_terms": ["duplicate", "request ID", "creat"],
+  "required_groups": [],
+  "locations": [
+    {"path":"cmd/mercury/main.go","start":48,"end":65},
+    {"path":"internal/jobs/model.go","start":22,"end":30},
+    {"path":"internal/jobs/service.go","start":26,"end":39},
+    {"path":"internal/jobs/storage.go","start":44,"end":65}
+  ]
+}

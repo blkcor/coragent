@@ -1,0 +1,8 @@
+{
+  "workspace_read": true,
+  "workspace_write": false,
+  "process": false,
+  "network": false,
+  "external_roots": false,
+  "environment_expansion": false
+}

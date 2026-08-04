@@ -157,18 +157,18 @@ V2 introduces product surfaces in this order:
 The runtime does not import either frontend. The TUI does not maintain a second
 copy of session truth.
 
-## Data and rollback boundary
+## Data and storage boundary
 
-V2 uses the same settings paths as V1: `~/.coragent/settings.json` for
+V2 retains the established settings paths: `~/.coragent/settings.json` for
 home-scoped settings and `.coragent/settings.json` for project-local settings.
-The settings format stays readable by the V1 binary so both binaries can share
-the file during the transition. Durable session state lives under
-`~/.coragent/sessions/`.
+Durable session state lives directly under `~/.coragent/sessions/`; there is no
+`v2/` path namespace.
 
-The initial V2 release performs no V1 data migration. Users can switch back to
-the V1 binary without restoring files or rewriting settings. After V2 becomes
-the default binary, V1 remains available as a tagged release for one release
-cycle.
+V1 is archived and is not a product rollback target. V2 performs no V1 data
+migration and does not promise that its settings or session format remains
+readable by V1. Unknown, legacy, corrupt, or newer session entries fail closed
+or are ignored by listing according to the versioned store contract; they are
+never rewritten or deleted automatically.
 
 ## General availability criteria
 

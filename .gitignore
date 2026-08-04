@@ -8,7 +8,8 @@
 # Local build and benchmark artifacts.
 .cache/
 .gocache/
-coragent
+/coragent
+/m1bench
 coverage.out
 *.test
 artifacts/

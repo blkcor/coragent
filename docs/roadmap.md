@@ -19,7 +19,8 @@ M1 is the first implementation milestone and ships a usable read-only product.
 - Stop a milestone when a safety gate fails. Warnings do not substitute for
   enforcement.
 - Do not add V1 compatibility paths to make migration appear cheaper.
-- Keep V2 state separate from V1 so rollback remains a binary choice.
+- Keep V2's versioned records distinguishable from unknown legacy state and
+  leave unrecognized data untouched.
 
 ## Milestone summary
 
@@ -88,11 +89,12 @@ errors stop the run with a typed cause. Missing optional instruction files are
 normal. Conflicting instruction sources follow the precedence in
 `architecture.md` and record their provenance.
 
-### Rollback
+### Replacement boundary
 
-M1 writes session state under `~/.coragent/sessions/` and settings through the
-same paths as V1. Switching to V1 does not require changing or deleting those
-files.
+M1 writes session state directly under `~/.coragent/sessions/` and retains the
+established settings paths. V1 is archived and is not a rollback target.
+Replacing an M1 binary never migrates, rewrites, or deletes unknown session
+entries automatically.
 
 ## M2: Safe Change Loop
 
@@ -229,9 +231,9 @@ to make a request fit.
 
 ### Rollback
 
-M3 adds new V2 record kinds but does not modify V1 data. A V2 binary that does
-not understand a newer record stops read-only with a version error instead of
-rewriting the session.
+M3 adds new V2 record kinds. A V2 binary that does not understand a newer or
+legacy record stops read-only with a version error instead of rewriting the
+session.
 
 ## M4: Interactive Daily Driver
 
@@ -298,7 +300,7 @@ program can embed without depending on internal packages.
 - CLI and TUI migrated to use only the public SDK
 - one small one-shot example frontend
 - versioning and compatibility policy beginning with V2
-- installation, upgrade, rollback, and V1 incompatibility documentation
+- installation, upgrade, binary-replacement, and V1 incompatibility documentation
 - release packaging for platforms with verified behavior
 
 ### Acceptance gate
@@ -316,11 +318,11 @@ program can embed without depending on internal packages.
 - The full offline, race, lint, build, macOS, and packaging gates pass.
 - The maintainer approves the API support burden before the first stable tag.
 
-### Cutover and rollback
+### Cutover and replacement
 
-The V2 binary becomes the default `coragent`. V1 remains available as a tagged
-release for one release cycle. V2 does not delete or migrate V1 data. Rolling
-back changes the installed binary and leaves both data namespaces intact.
+The V2 binary becomes the default `coragent`. V1 remains archived and is not a
+supported rollback target. Replacing the installed V2 binary leaves versioned
+session data intact and never deletes or migrates unknown legacy entries.
 
 ## Conditional work after the V2 release
 
