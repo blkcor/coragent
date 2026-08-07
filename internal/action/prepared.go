@@ -12,6 +12,7 @@ type PreparedPatch struct {
 	SourceSHA256   string
 	ExpectedSHA256 string
 	Diff           string
+	DiffDigest     string
 	IsSensitive    bool
 	CreatedAt      time.Time
 }

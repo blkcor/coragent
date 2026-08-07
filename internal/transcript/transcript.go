@@ -46,6 +46,22 @@ const (
 	KindInstructionsLoaded Kind = "instructions_loaded"
 	// KindSessionClosed records the non-destructive closure of a session.
 	KindSessionClosed Kind = "session_closed"
+	// KindActionPrepared records a validated, side-effect-free prepared patch
+	// with content-identity fields and a diff digest for integrity verification.
+	KindActionPrepared Kind = "action_prepared"
+	// KindActionApproved records a user approval of a prepared action.
+	KindActionApproved Kind = "action_approved"
+	// KindActionDenied records a user denial of a prepared action.
+	KindActionDenied Kind = "action_denied"
+	// KindActionCommitting records the durable fence written immediately
+	// before the file mutation executes.
+	KindActionCommitting Kind = "action_committing"
+	// KindActionCommitted records the successful file mutation with the
+	// actual on-disk SHA256 after the write.
+	KindActionCommitted Kind = "action_committed"
+	// KindActionAborted records that a prepared or committing action was
+	// abandoned with a typed reason.
+	KindActionAborted Kind = "action_aborted"
 )
 
 // Record is the serializable Transcript envelope. Seq is a session-wide
@@ -166,6 +182,59 @@ type InstructionsLoadedPayload struct {
 	Sources []InstructionSource `json:"sources"`
 }
 
+// ActionPreparedPayload records a validated prepared patch with content
+// identity. Diff content is never stored in the transcript — only its
+// SHA-256 digest, which enables integrity verification during crash recovery.
+type ActionPreparedPayload struct {
+	RequestID      string `json:"request_id"`
+	ToolCallID     string `json:"tool_call_id"`
+	Path           string `json:"path"`
+	SourceSHA256   string `json:"source_sha256"`
+	ExpectedSHA256 string `json:"expected_sha256"`
+	DiffDigest     string `json:"diff_digest"`
+}
+
+// ActionApprovedPayload records a user approval of a prepared action.
+type ActionApprovedPayload struct {
+	RequestID string `json:"request_id"`
+	CommandID string `json:"command_id"`
+}
+
+// ActionDeniedPayload records a user denial of a prepared action.
+type ActionDeniedPayload struct {
+	RequestID string `json:"request_id"`
+	CommandID string `json:"command_id"`
+}
+
+// ActionCommittingPayload records the durable fence written immediately
+// before the file mutation executes.
+type ActionCommittingPayload struct {
+	RequestID string `json:"request_id"`
+}
+
+// ActionCommittedPayload records the successful write with the on-disk
+// SHA-256 after the mutation.
+type ActionCommittedPayload struct {
+	RequestID    string `json:"request_id"`
+	ActualSHA256 string `json:"actual_sha256"`
+}
+
+// AbortReason classifies why a prepared or committing action was abandoned.
+type AbortReason string
+
+const (
+	AbortStale       AbortReason = "stale"
+	AbortCancelled   AbortReason = "cancelled"
+	AbortPolicyBlock AbortReason = "policy_block"
+	AbortDenied      AbortReason = "denied"
+)
+
+// ActionAbortedPayload records why an action was abandoned.
+type ActionAbortedPayload struct {
+	RequestID string      `json:"request_id"`
+	Reason    AbortReason `json:"reason"`
+}
+
 // SessionClosedPayload marks a non-destructive close request.
 type SessionClosedPayload struct{}
 
@@ -191,6 +260,12 @@ var payloadFactories = map[Kind]func() any{
 	KindRunOutcome:           func() any { return &RunOutcomePayload{} },
 	KindInstructionsLoaded:   func() any { return &InstructionsLoadedPayload{} },
 	KindSessionClosed:        func() any { return &SessionClosedPayload{} },
+	KindActionPrepared:       func() any { return &ActionPreparedPayload{} },
+	KindActionApproved:       func() any { return &ActionApprovedPayload{} },
+	KindActionDenied:         func() any { return &ActionDeniedPayload{} },
+	KindActionCommitting:     func() any { return &ActionCommittingPayload{} },
+	KindActionCommitted:      func() any { return &ActionCommittedPayload{} },
+	KindActionAborted:        func() any { return &ActionAbortedPayload{} },
 }
 
 // New builds a Record, marshaling the kind-specific payload into the
@@ -295,6 +370,36 @@ func (r Record) Validate() error {
 			if len(source.Sources) == 0 || source.Scope == "" || source.SHA256 == "" {
 				return fmt.Errorf("%w: incomplete instruction provenance at seq %d", ErrInvalidRecord, r.Seq)
 			}
+		}
+	case *ActionPreparedPayload:
+		if p.RequestID == "" || p.ToolCallID == "" || p.Path == "" ||
+			p.SourceSHA256 == "" || p.ExpectedSHA256 == "" || p.DiffDigest == "" {
+			return fmt.Errorf("%w: action_prepared at seq %d requires request_id, tool_call_id, path, source_sha256, expected_sha256, and diff_digest", ErrInvalidRecord, r.Seq)
+		}
+	case *ActionApprovedPayload:
+		if p.RequestID == "" || p.CommandID == "" {
+			return fmt.Errorf("%w: action_approved at seq %d requires request_id and command_id", ErrInvalidRecord, r.Seq)
+		}
+	case *ActionDeniedPayload:
+		if p.RequestID == "" || p.CommandID == "" {
+			return fmt.Errorf("%w: action_denied at seq %d requires request_id and command_id", ErrInvalidRecord, r.Seq)
+		}
+	case *ActionCommittingPayload:
+		if p.RequestID == "" {
+			return fmt.Errorf("%w: action_committing at seq %d requires request_id", ErrInvalidRecord, r.Seq)
+		}
+	case *ActionCommittedPayload:
+		if p.RequestID == "" || p.ActualSHA256 == "" {
+			return fmt.Errorf("%w: action_committed at seq %d requires request_id and actual_sha256", ErrInvalidRecord, r.Seq)
+		}
+	case *ActionAbortedPayload:
+		if p.RequestID == "" {
+			return fmt.Errorf("%w: action_aborted at seq %d requires request_id", ErrInvalidRecord, r.Seq)
+		}
+		switch p.Reason {
+		case AbortStale, AbortCancelled, AbortPolicyBlock, AbortDenied:
+		default:
+			return fmt.Errorf("%w: action_aborted at seq %d has unknown reason %q", ErrInvalidRecord, r.Seq, p.Reason)
 		}
 	}
 	return nil

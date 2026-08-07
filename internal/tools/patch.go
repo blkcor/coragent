@@ -109,6 +109,7 @@ func (t *patchTool) Prepare(ctx context.Context, raw json.RawMessage) (action.Pr
 	repLines := splitReplacementLines(*args.Replacement)
 	newContent := apply(oldLines, repLines, r, hadNL)
 	diff, _ := buildUnifiedDiff(clean, oldLines, r, repLines)
+	diffDigest := sha256Hex([]byte(diff))
 	d := t.projector.Detector()
 	isSensitive := d.Contains(string(source)) || d.Contains(*args.Replacement) || d.Contains(diff)
 	sourceHash := sha256Hex(source)
@@ -126,6 +127,7 @@ func (t *patchTool) Prepare(ctx context.Context, raw json.RawMessage) (action.Pr
 			SourceSHA256:   sourceHash,
 			ExpectedSHA256: expectedHash,
 			Diff:           diff,
+			DiffDigest:     diffDigest,
 			IsSensitive:    isSensitive,
 			CreatedAt:      time.Now(),
 		},

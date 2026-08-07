@@ -1,6 +1,6 @@
 # S1.5 Action Journal: Transcript Record Kinds
 
-**Status:** pending acceptance
+**Status:** accepted
 **Prerequisite:** [S1.4 accepted](04-approval-protocol.md)
 
 ## Goal
@@ -28,13 +28,13 @@
 
 ## Acceptance
 
-- [ ] 6 种 record 正确序列化/反序列化（严格 JSON，未知字段拒绝）
-- [ ] 每种 record Validate() 拒绝缺少必填字段的记录
-- [ ] ValidateRecords 接受合法的完整 action 生命周期链
-- [ ] ValidateRecords 拒绝：无 prepared 的 approved、无 approved 的 committing、
+- [x] 6 种 record 正确序列化/反序列化（严格 JSON，未知字段拒绝）
+- [x] 每种 record Validate() 拒绝缺少必填字段的记录
+- [x] ValidateRecords 接受合法的完整 action 生命周期链
+- [x] ValidateRecords 拒绝：无 prepared 的 approved、无 approved 的 committing、
       重复的 committed
-- [ ] diff_digest 与 Prepare 阶段生成的 diff 内容一致（sha256 校验）
-- [ ] 离线测试：合法序列覆盖、非法序列拒绝、字段缺失拒绝
+- [x] diff_digest 与 Prepare 阶段生成的 diff 内容一致（sha256 校验）
+- [x] 离线测试：合法序列覆盖、非法序列拒绝、字段缺失拒绝
 
 ## Evidence
 

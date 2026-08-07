@@ -30,7 +30,40 @@ var (
 	ErrTerminalWithOpenCall  = errors.New("transcript: run terminated with an open tool call")
 	ErrDuplicateSessionClose = errors.New("transcript: duplicate session close fact")
 	ErrRecordsAfterClose     = errors.New("transcript: records appear after session close")
+	// ErrDuplicateActionRequest rejects two action_prepared records with the
+	// same request_id.
+	ErrDuplicateActionRequest = errors.New("transcript: duplicate action_prepared request_id")
+	// ErrOrphanActionRecord rejects an action lifecycle record whose
+	// request_id has no preceding action_prepared.
+	ErrOrphanActionRecord = errors.New("transcript: action record references unknown request_id")
+	// ErrActionWithoutApproval rejects action_committing without a preceding
+	// action_approved for the same request_id.
+	ErrActionWithoutApproval = errors.New("transcript: action_committing without preceding action_approved")
+	// ErrCommittedWithoutCommitting rejects action_committed without a
+	// preceding action_committing for the same request_id.
+	ErrCommittedWithoutCommitting = errors.New("transcript: action_committed without preceding action_committing")
+	// ErrDuplicateActionCommitted rejects two action_committed records for
+	// the same request_id.
+	ErrDuplicateActionCommitted = errors.New("transcript: duplicate action_committed request_id")
+	// ErrActionAfterTerminal rejects an action record that appears after the
+	// lifecycle has already been terminated by denied, aborted, or committed.
+	ErrActionAfterTerminal = errors.New("transcript: action record after terminal lifecycle state")
 )
+
+// actionState tracks the lifecycle state of one request_id.
+type actionState struct {
+	prepared    bool
+	approved    bool
+	denied      bool
+	committing  bool
+	committed   bool
+	aborted     bool
+	abortReason AbortReason
+}
+
+func (s actionState) isTerminal() bool {
+	return s.denied || s.committed || s.aborted
+}
 
 // ValidateTranscript checks a loaded transcript end to end: per-record
 // validity, contiguous sequence numbers from 1, and the tool-call pairing
@@ -77,8 +110,120 @@ func ValidateRecords(records []Record) error {
 			closed = true
 		}
 	}
-	_, _, err := toolPairs(records)
-	return err
+	if _, _, err := toolPairs(records); err != nil {
+		return err
+	}
+	return validateActionLifecycle(records)
+}
+
+// validateActionLifecycle checks action record pairing rules:
+//
+//	prepared → approved / denied / aborted
+//	approved → committing → committed / aborted
+//
+// Duplicate prepared, duplicate committed, records after terminal state,
+// and records with no preceding prepared are all rejected.
+func validateActionLifecycle(records []Record) error {
+	states := make(map[string]*actionState)
+	for _, rec := range records {
+		var reqID string
+		switch rec.Kind {
+		case KindActionPrepared:
+			var p ActionPreparedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return fmt.Errorf("transcript: record %d: %w", rec.Seq, err)
+			}
+			reqID = p.RequestID
+			if _, exists := states[reqID]; exists {
+				return fmt.Errorf("%w: %q (seq %d)", ErrDuplicateActionRequest, reqID, rec.Seq)
+			}
+			states[reqID] = &actionState{prepared: true}
+		case KindActionApproved:
+			var p ActionApprovedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return fmt.Errorf("transcript: record %d: %w", rec.Seq, err)
+			}
+			reqID = p.RequestID
+			s, ok := states[reqID]
+			if !ok {
+				return fmt.Errorf("%w: approved %q (seq %d)", ErrOrphanActionRecord, reqID, rec.Seq)
+			}
+			if s.approved {
+				return fmt.Errorf("%w: approved %q (seq %d)", ErrDuplicateActionRequest, reqID, rec.Seq)
+			}
+			if s.isTerminal() {
+				return fmt.Errorf("%w: approved %q after terminal state (seq %d)", ErrActionAfterTerminal, reqID, rec.Seq)
+			}
+			s.approved = true
+		case KindActionDenied:
+			var p ActionDeniedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return fmt.Errorf("transcript: record %d: %w", rec.Seq, err)
+			}
+			reqID = p.RequestID
+			s, ok := states[reqID]
+			if !ok {
+				return fmt.Errorf("%w: denied %q (seq %d)", ErrOrphanActionRecord, reqID, rec.Seq)
+			}
+			if s.isTerminal() {
+				return fmt.Errorf("%w: denied %q after terminal state (seq %d)", ErrActionAfterTerminal, reqID, rec.Seq)
+			}
+			s.denied = true
+		case KindActionCommitting:
+			var p ActionCommittingPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return fmt.Errorf("transcript: record %d: %w", rec.Seq, err)
+			}
+			reqID = p.RequestID
+			s, ok := states[reqID]
+			if !ok {
+				return fmt.Errorf("%w: committing %q (seq %d)", ErrOrphanActionRecord, reqID, rec.Seq)
+			}
+			if s.isTerminal() {
+				return fmt.Errorf("%w: committing %q after terminal state (seq %d)", ErrActionAfterTerminal, reqID, rec.Seq)
+			}
+			if !s.approved {
+				return fmt.Errorf("%w: committing %q (seq %d)", ErrActionWithoutApproval, reqID, rec.Seq)
+			}
+			s.committing = true
+		case KindActionCommitted:
+			var p ActionCommittedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return fmt.Errorf("transcript: record %d: %w", rec.Seq, err)
+			}
+			reqID = p.RequestID
+			s, ok := states[reqID]
+			if !ok {
+				return fmt.Errorf("%w: committed %q (seq %d)", ErrOrphanActionRecord, reqID, rec.Seq)
+			}
+			if s.committed {
+				return fmt.Errorf("%w: committed %q (seq %d)", ErrDuplicateActionCommitted, reqID, rec.Seq)
+			}
+			if s.isTerminal() {
+				return fmt.Errorf("%w: committed %q after terminal state (seq %d)", ErrActionAfterTerminal, reqID, rec.Seq)
+			}
+			if !s.committing {
+				return fmt.Errorf("%w: committed %q (seq %d)", ErrCommittedWithoutCommitting, reqID, rec.Seq)
+			}
+			s.committed = true
+		case KindActionAborted:
+			var p ActionAbortedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return fmt.Errorf("transcript: record %d: %w", rec.Seq, err)
+			}
+			reqID = p.RequestID
+			s, ok := states[reqID]
+			if !ok {
+				return fmt.Errorf("%w: aborted %q (seq %d)", ErrOrphanActionRecord, reqID, rec.Seq)
+			}
+			if s.isTerminal() {
+				return fmt.Errorf("%w: aborted %q after terminal state (seq %d)", ErrActionAfterTerminal, reqID, rec.Seq)
+			}
+			s.aborted = true
+			s.abortReason = p.Reason
+		}
+	}
+	return nil
 }
 
 // OpenToolCalls returns complete call payloads that have no terminal result,

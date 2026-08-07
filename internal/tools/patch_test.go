@@ -122,6 +122,9 @@ func TestPatchReplaceRange(t *testing.T) {
 	if !strings.Contains(p.Diff, "-func Alpha() {}") || !strings.Contains(p.Diff, "+func A() {}") {
 		t.Fatalf("Diff content wrong: %s", p.Diff)
 	}
+	if p.DiffDigest != sha256Str(p.Diff) {
+		t.Fatalf("DiffDigest = %q, want sha256 of diff content", p.DiffDigest)
+	}
 	if p.IsSensitive {
 		t.Fatal("IsSensitive should be false")
 	}
