@@ -27,17 +27,17 @@ import (
 const maxResultBytes = 64 * 1024
 
 type base struct {
-	fs        *workspace.FS
+	fs        workspace.FileService
 	projector *dataproj.Projector
 }
 
 // NewCatalog creates exactly read, list, and search. No mutation, command, or
 // network capability is reachable from the returned tools.
-func NewCatalog(w *workspace.FS, projector *dataproj.Projector) []action.Tool {
+func NewCatalog(fs workspace.FileService, projector *dataproj.Projector) []action.Tool {
 	if projector == nil {
 		projector = dataproj.New()
 	}
-	b := base{fs: w, projector: projector}
+	b := base{fs: fs, projector: projector}
 	return []action.Tool{&listTool{base: b}, &readTool{base: b}, &searchTool{base: b}}
 }
 
@@ -78,7 +78,7 @@ func (t *readTool) Prepare(ctx context.Context, raw json.RawMessage) (action.Pre
 func (t *readTool) Execute(ctx context.Context, prepared action.Prepared) action.Execution {
 	var args readArgs
 	_ = json.Unmarshal(prepared.Arguments, &args)
-	f, clean, err := t.fs.OpenFile(args.Path)
+	f, clean, err := t.fs.Read(args.Path)
 	if err != nil {
 		return toolError(err)
 	}
@@ -190,7 +190,8 @@ func (t *listTool) Execute(ctx context.Context, prepared action.Prepared) action
 	if err := ctx.Err(); err != nil {
 		return cancelled()
 	}
-	if _, _, err := t.fs.Stat(args.Path); err != nil {
+	walkFS, _, err := t.fs.List(args.Path)
+	if err != nil {
 		return toolError(err)
 	}
 	recursive := true
@@ -198,7 +199,7 @@ func (t *listTool) Execute(ctx context.Context, prepared action.Prepared) action
 		recursive = *args.Recursive
 	}
 	var entries []string
-	walkErr := fs.WalkDir(t.fs.GoFS(), args.Path, func(name string, entry fs.DirEntry, err error) error {
+	walkErr := fs.WalkDir(walkFS, args.Path, func(name string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -285,7 +286,8 @@ func (t *searchTool) Execute(ctx context.Context, prepared action.Prepared) acti
 	if err := ctx.Err(); err != nil {
 		return cancelled()
 	}
-	if _, _, err := t.fs.Stat(args.Path); err != nil {
+	walkFS, _, err := t.fs.Search(args.Path)
+	if err != nil {
 		return toolError(err)
 	}
 	re := regexp.MustCompile(args.Pattern)
@@ -294,7 +296,7 @@ func (t *searchTool) Execute(ctx context.Context, prepared action.Prepared) acti
 	truncated := false
 	protectedSkipped := 0
 	nonTextSkipped := 0
-	walkErr := fs.WalkDir(t.fs.GoFS(), args.Path, func(name string, entry fs.DirEntry, err error) error {
+	walkErr := fs.WalkDir(walkFS, args.Path, func(name string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -321,7 +323,7 @@ func (t *searchTool) Execute(ctx context.Context, prepared action.Prepared) acti
 			nonTextSkipped++
 			return nil
 		}
-		f, _, err := t.fs.OpenFile(name)
+		f, _, err := t.fs.Read(name)
 		if err != nil {
 			return err
 		}

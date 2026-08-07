@@ -37,7 +37,7 @@ func TestToolEventPersistenceFailureLeavesCallsForRestartReconciliation(t *testi
 				t.Fatal(err)
 			}
 			defer func() { _ = workspaceFS.Close() }()
-			broker, err := action.NewBroker(tools.NewCatalog(workspaceFS, dataproj.New())...)
+			broker, err := action.NewBroker(tools.NewCatalog(workspace.NewFileService(workspaceFS), dataproj.New())...)
 			if err != nil {
 				t.Fatal(err)
 			}

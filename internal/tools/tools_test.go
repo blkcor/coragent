@@ -40,7 +40,7 @@ func setupBroker(t *testing.T) (string, *action.Broker) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	b, err := action.NewBroker(tools.NewCatalog(w, dataproj.New())...)
+	b, err := action.NewBroker(tools.NewCatalog(workspace.NewFileService(w), dataproj.New())...)
 	if err != nil {
 		t.Fatal(err)
 	}

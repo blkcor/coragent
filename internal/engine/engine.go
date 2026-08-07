@@ -215,7 +215,7 @@ func (e *Engine) createOrLoad(ctx context.Context, workspacePath, sessionID stri
 		_ = w.Close()
 		return nil, err
 	}
-	broker, err := action.NewBrokerWithProjector(projector, tools.NewCatalog(w, projector)...)
+	broker, err := action.NewBrokerWithProjector(projector, tools.NewCatalog(workspace.NewFileService(w), projector)...)
 	if err != nil {
 		_ = w.Close()
 		return nil, err

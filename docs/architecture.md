@@ -94,15 +94,14 @@ covers:
 
 - submit a user prompt
 - answer an approval request
-- acknowledge an indeterminate action
 - queue steering
 - cancel active work
 - resume a saved session
 - close a session
 
-M1 implements submit, cancel, resume, and close. M2 adds approval responses and
-indeterminate-action acknowledgement. M4 adds queued steering. An earlier
-milestone does not expose a command before its behavioral contract exists.
+M1 implements submit, cancel, resume, and close. M2 adds approval responses.
+M4 adds queued steering. An earlier milestone does not expose a command before
+its behavioral contract exists.
 
 Every SessionCommand has an ID. SessionCommands that answer a request also carry
 the request ID. Duplicate answers are rejected without changing state. A
@@ -497,16 +496,18 @@ new model request:
 
 - a read action becomes `interrupted` and may be requested again by the model
 - a deterministic file mutation compares pre-state and expected post-state
-  identities; an exact post-state becomes `recovered_success`, an unchanged
-  pre-state becomes `interrupted_no_effect`, and any other state becomes
-  `indeterminate`
-- a process action becomes `indeterminate` unless an executor-specific receipt
-  proves its outcome
+  identities against the current on-disk content; an exact post-state match
+  becomes `recovered_success`, an exact pre-state match becomes
+  `interrupted_no_effect` (safe to re-apply without re-approval), and a
+  mismatch that matches neither becomes `stale_aborted` (requires re-prepare
+  and re-approval)
+- a process action is never replayed; it becomes `interrupted` unless an
+  executor-specific receipt proves its outcome
 
 Coragent never automatically repeats an interrupted mutation or process action.
 Every reconciled status becomes the one ToolResult paired with the open call.
-An indeterminate side effect is shown to the user and requires acknowledgement
-before the run can continue.
+Content-identity verification resolves every file-mutation recovery case
+automatically; no user acknowledgement is required.
 
 The macOS process runner uses a small supervisor that owns the child process
 group and a control channel from Coragent. If that channel closes because the

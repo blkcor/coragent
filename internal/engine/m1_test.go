@@ -70,7 +70,7 @@ func newDurableFixture(t *testing.T) durableFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	broker, err := action.NewBroker(tools.NewCatalog(w, dataproj.New())...)
+	broker, err := action.NewBroker(tools.NewCatalog(workspace.NewFileService(w), dataproj.New())...)
 	if err != nil {
 		t.Fatal(err)
 	}

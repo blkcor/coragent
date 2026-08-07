@@ -106,7 +106,7 @@ M2 is the first milestone that can complete everyday code changes.
 
 ### Scope
 
-- one prepared patch tool for file creation and modification
+- one prepared patch tool for file modification (file must exist)
 - identity-bound previews and stale-source detection
 - one command tool with timeout, process-group cancellation, and bounded output
 - an immutable per-session Authority Envelope plus Effective Policy
@@ -117,11 +117,12 @@ M2 is the first milestone that can complete everyday code changes.
 - a disabled command tool on platforms without equivalent confinement
 - a minimal process environment with no ambient credential variables
 - correlated approval SessionCommands for mutations and commands
-- an acknowledgement SessionCommand for an indeterminate recovered action
 - argument revision that invalidates the old preview and requires preparation
   and approval again
 - per-call read-root, write-root, and network grants
-- a durable Action Attempt journal and crash reconciliation
+- a durable Action Attempt journal (extended from the append-only Transcript) and
+  crash reconciliation via content-identity verification (no user acknowledgement
+  required)
 - Run Budget extensions for tool-call count and active process time
 - credential detection for prepared patches and process output before preview or
   projection
