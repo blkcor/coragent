@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -206,13 +207,49 @@ func TestFileServiceSearchFileNotFound(t *testing.T) {
 	}
 }
 
-func TestFileServiceWriteReturnsReadOnly(t *testing.T) {
-	fsvc, _ := newTestFileService(t)
-	if _, err := fsvc.Write("x.txt", []byte("x"), ""); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("Write = %v, want ErrReadOnly", err)
+func TestFileServiceWriteWritesAndVerifiesSHA256(t *testing.T) {
+	fsvc, dir := newTestFileService(t)
+	const name = "target.txt"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := fsvc.Write("x.txt", []byte("x"), "abc123"); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("Write(expectedSHA256) = %v, want ErrReadOnly", err)
+	wantHash := sha256Hex([]byte("world\n"))
+	gotHash, err := fsvc.Write(name, []byte("world\n"), wantHash)
+	if err != nil {
+		t.Fatalf("Write = %v, want nil", err)
+	}
+	if gotHash != wantHash {
+		t.Fatalf("Write returned hash %s, want %s", gotHash, wantHash)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "world\n" {
+		t.Fatalf("content = %q, want %q", content, "world\n")
+	}
+}
+
+func TestFileServiceWriteRejectsWrongSHA256(t *testing.T) {
+	fsvc, dir := newTestFileService(t)
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := fsvc.Write("x.txt", []byte("world\n"), "abc123")
+	if err == nil || !strings.Contains(err.Error(), "SHA256 mismatch") {
+		t.Fatalf("Write with wrong SHA256 = %v, want SHA256 mismatch", err)
+	}
+}
+
+func TestFileServiceWriteRejectsEscapeAndSymlink(t *testing.T) {
+	fsvc, dir := newTestFileService(t)
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"../outside", "link"} {
+		if _, err := fsvc.Write(name, []byte("x"), ""); !errors.Is(err, ErrEscape) {
+			t.Errorf("Write(%q) = %v, want ErrEscape", name, err)
+		}
 	}
 }
 

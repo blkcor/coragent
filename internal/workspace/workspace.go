@@ -103,6 +103,23 @@ func (w *FS) OpenFile(name string) (*os.File, string, error) {
 	return f, clean, nil
 }
 
+// WriteFile writes data to a workspace file from a clean, validated path.
+// Callers must already pass through Clean and rejectSymlinkComponents.
+func (w *FS) WriteFile(clean string, data []byte) error {
+	f, err := w.root.Create(clean)
+	if err != nil {
+		if strings.Contains(err.Error(), "path escapes") {
+			return fmt.Errorf("%w: %s", ErrEscape, clean)
+		}
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 func (w *FS) Stat(name string) (fs.FileInfo, string, error) {
 	clean, err := w.Clean(name)
 	if err != nil {
@@ -123,6 +140,11 @@ func (w *FS) Stat(name string) (fs.FileInfo, string, error) {
 		return nil, clean, fmt.Errorf("%w: symlink or replaced path %s", ErrEscape, clean)
 	}
 	return info, clean, nil
+}
+
+// RejectSymlinks is the exported form of rejectSymlinkComponents.
+func (w *FS) RejectSymlinks(clean string) error {
+	return w.rejectSymlinkComponents(clean)
 }
 
 // rejectSymlinkComponents makes in-workspace aliases fail closed too. Merely

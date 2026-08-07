@@ -17,7 +17,10 @@ import (
 
 type Effect string
 
-const EffectRead Effect = "read"
+const (
+	EffectRead  Effect = "read"
+	EffectWrite Effect = "write"
+)
 
 // Prepared is a validated, side-effect-free effective action.
 type Prepared struct {
@@ -25,6 +28,8 @@ type Prepared struct {
 	Arguments json.RawMessage
 	Effects   []Effect
 	Paths     []string
+	// Patch is set by the patch tool's Prepare. Nil for all other tools.
+	Patch *PreparedPatch
 }
 
 type Execution struct {
@@ -124,8 +129,9 @@ func (b *Broker) SkippedResult(callID string) transcript.ToolResultPayload {
 	})
 }
 
-// Execute routes resolution, preparation, immutable M1 authority policy, and
-// scoped execution. It always returns one terminal model-visible result.
+// Execute routes resolution, preparation, and scoped execution. EffectRead
+// tools execute immediately (prepare + execute in one call). EffectWrite tools
+// stop after prepare; the caller must use ExecutePrepared to commit.
 func (b *Broker) Execute(ctx context.Context, call provider.ToolCall) transcript.ToolResultPayload {
 	projected, blocked := b.ProjectCalls([]provider.ToolCall{call})
 	call = projected[0]
@@ -136,7 +142,7 @@ func (b *Broker) Execute(ctx context.Context, call provider.ToolCall) transcript
 	tool, ok := b.tools[call.Name]
 	if !ok {
 		result.Outcome = transcript.ToolResultError
-		result.Content = fmt.Sprintf("unknown tool %q; available tools are read-only", call.Name)
+		result.Content = fmt.Sprintf("unknown tool %q", call.Name)
 		return b.project(result)
 	}
 	if err := ctx.Err(); err != nil {
@@ -150,14 +156,59 @@ func (b *Broker) Execute(ctx context.Context, call provider.ToolCall) transcript
 		result.Content = "invalid tool arguments: " + safeError(err)
 		return b.project(result)
 	}
-	if prepared.Tool != call.Name || len(prepared.Effects) != 1 || prepared.Effects[0] != EffectRead {
+	if prepared.Tool != call.Name || len(prepared.Effects) != 1 {
 		result.Outcome = transcript.ToolResultError
-		result.Content = "tool blocked by immutable M1 read-only authority"
+		result.Content = "tool produced an invalid prepared action"
 		return b.project(result)
 	}
+	switch prepared.Effects[0] {
+	case EffectRead:
+		exec := tool.Execute(ctx, prepared)
+		result.Outcome = exec.Outcome
+		result.Content = exec.Content
+	case EffectWrite:
+		result.Outcome = transcript.ToolResultSuccess
+		result.Content = "action prepared; awaiting execution"
+	default:
+		result.Outcome = transcript.ToolResultBlocked
+		result.Content = "tool effect is not allowed by current authority policy"
+	}
+	if result.Outcome == "" {
+		result.Outcome = transcript.ToolResultError
+		result.Content = "tool returned an invalid empty outcome"
+	}
+	return b.project(result)
+}
+
+// ExecutePrepared executes a previously prepared EffectWrite action. It
+// performs no approval check (that is the caller's responsibility in S1.6)
+// and delegates stale detection to the tool's Execute method.
+func (b *Broker) ExecutePrepared(ctx context.Context, prepared Prepared) transcript.ToolResultPayload {
+	tool, ok := b.tools[prepared.Tool]
+	if !ok {
+		return transcript.ToolResultPayload{
+			Outcome: transcript.ToolResultError,
+			Content: fmt.Sprintf("unknown tool %q", prepared.Tool),
+		}
+	}
+	if len(prepared.Effects) != 1 || prepared.Effects[0] != EffectWrite {
+		return transcript.ToolResultPayload{
+			Outcome: transcript.ToolResultError,
+			Content: "only write-effect actions can be executed via ExecutePrepared",
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return transcript.ToolResultPayload{
+			Outcome: transcript.ToolResultCancelled,
+			Content: "tool call cancelled before execution",
+		}
+	}
 	exec := tool.Execute(ctx, prepared)
-	result.Outcome = exec.Outcome
-	result.Content = exec.Content
+	result := transcript.ToolResultPayload{
+		CallID:  prepared.PatchID(),
+		Outcome: exec.Outcome,
+		Content: exec.Content,
+	}
 	if result.Outcome == "" {
 		result.Outcome = transcript.ToolResultError
 		result.Content = "tool returned an invalid empty outcome"

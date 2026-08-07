@@ -1,6 +1,6 @@
 # S1.3 Action Broker: EffectWrite and Two-Phase Execution
 
-**Status:** pending acceptance
+**Status:** accepted
 **Prerequisite:** [S1.2 accepted](02-patch-tool-prepare.md)
 
 ## Goal
@@ -20,14 +20,14 @@
 
 ## Acceptance
 
-- [ ] EffectRead 工具（read/list/search）行为不变，M1 所有测试通过
-- [ ] EffectWrite 工具（patch）Prepare 返回 PreparedAction，不执行写入
-- [ ] EffectWrite 工具 Execute 执行实际写入
-- [ ] 未知 Effect 的工具调用返回 blocked（policy）
-- [ ] Stale detection：Execute 时 source_sha256 不匹配 → 返回 stale，不写入
-- [ ] Execute 时 expected_sha256 与实际写入后文件哈希不匹配 → 返回错误
-- [ ] 离线测试：Prepare/Execute 配对、stale 拒绝、policy block、未知 tool
-- [ ] `go test -race ./...` 通过
+- [x] EffectRead 工具（read/list/search）行为不变，M1 所有测试通过
+- [x] EffectWrite 工具（patch）Prepare 返回 PreparedAction，不执行写入
+- [x] EffectWrite 工具 Execute 执行实际写入
+- [x] 未知 Effect 的工具调用返回 blocked（policy）
+- [x] Stale detection：Execute 时 source_sha256 不匹配 → 返回 stale，不写入
+- [x] Execute 时 expected_sha256 与实际写入后文件哈希不匹配 → 返回错误
+- [x] 离线测试：Prepare/Execute 配对、stale 拒绝、policy block、未知 tool
+- [x] `go test -race ./...` 通过
 
 ## Evidence
 

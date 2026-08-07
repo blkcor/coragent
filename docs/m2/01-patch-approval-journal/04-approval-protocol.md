@@ -1,6 +1,6 @@
 # S1.4 Approval Protocol: SessionCommand and Event
 
-**Status:** pending acceptance
+**Status:** accepted
 **Prerequisite:** [S1.3 accepted](03-broker-effect-write.md)
 
 ## Goal
@@ -19,13 +19,13 @@
 
 ## Acceptance
 
-- [ ] `approve` 和 `deny` SessionCommand 正确序列化/反序列化
-- [ ] `approval_required` Event 正确序列化/反序列化
-- [ ] diff 字段可包含多行文本、Unicode、特殊字符（不损坏）
-- [ ] 未知字段 → 解码失败
-- [ ] 重复 command ID → 拒绝
-- [ ] Event cursor 会话级单调递增（沿袭 M1 规则）
-- [ ] 离线测试：序列化往返、ID 幂等、未知字段拒绝
+- [x] `approve` 和 `deny` SessionCommand 正确序列化/反序列化
+- [x] `approval_required` Event 正确序列化/反序列化
+- [x] diff 字段可包含多行文本、Unicode、特殊字符（不损坏）
+- [x] 未知字段 → 解码失败
+- [x] 重复 command ID → 拒绝
+- [x] Event cursor 会话级单调递增（沿袭 M1 规则）
+- [x] 离线测试：序列化往返、ID 幂等、未知字段拒绝
 
 ## Evidence
 

@@ -3,13 +3,9 @@
 package workspace
 
 import (
-	"errors"
 	"io/fs"
 	"os"
 )
-
-// ErrReadOnly is returned by Write when the FileService is in read-only mode.
-var ErrReadOnly = errors.New("workspace: file service is read-only")
 
 // FileService is the unified file-access interface for tools. Every method
 // enforces workspace confinement, symlink rejection, and TOCTOU protection.
@@ -32,9 +28,10 @@ type FileService interface {
 	// future milestones may add search-specific optimizations.
 	Search(name string) (fs.FS, string, error)
 
-	// Write writes data to a workspace file. M1 always returns ErrReadOnly.
-	// expectedSHA256, when non-empty, verifies the expected content after write.
-	// Returns the actual SHA256 of the written content.
+	// Write writes data to a workspace file, rejecting path escapes and
+	// symlinks. expectedSHA256, when non-empty, must match the SHA256 of data;
+	// a mismatch fails before any write. Returns the SHA256 of the written
+	// content.
 	Write(name string, data []byte, expectedSHA256 string) (string, error)
 
 	// Identity returns the SHA256 hex digest of a file's content.

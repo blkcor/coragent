@@ -1,6 +1,6 @@
 # S1.2 Patch Tool: Prepare Phase
 
-**Status:** pending acceptance
+**Status:** accepted
 **Prerequisite:** [S1.1 accepted](01-fileservice-refactor.md)
 
 ## Goal
@@ -23,15 +23,15 @@
 
 ## Acceptance
 
-- [ ] path 存在 + target 有效 → 返回 PreparedPatch，包含正确的 diff 和哈希
-- [ ] path 不存在 → 错误 "file not found"
-- [ ] target 行号越界 → 错误 "line range out of bounds"
-- [ ] target 格式非法 → 错误，明确指出格式要求
-- [ ] 替换后文件末尾无多余空行（preserve trailing newline 语义）
-- [ ] diff 包含凭据模式 → IsSensitive = true
-- [ ] 大文件（接近 64KiB）→ 正常处理，输出被截断时有明确标记
-- [ ] 离线测试覆盖所有 target 格式变体 + 边界条件（空文件、单行文件、末行替换）
-- [ ] Prepare 阶段**不执行任何文件写入**
+- [x] path 存在 + target 有效 → 返回 PreparedPatch，包含正确的 diff 和哈希
+- [x] path 不存在 → 错误 "file not found"
+- [x] target 行号越界 → 错误 "line range out of bounds"
+- [x] target 格式非法 → 错误，明确指出格式要求
+- [x] 替换后文件末尾无多余空行（preserve trailing newline 语义）
+- [x] diff 包含凭据模式 → IsSensitive = true
+- [x] 大文件（接近 64KiB）→ 正常处理，输出被截断时有明确标记
+- [x] 离线测试覆盖所有 target 格式变体 + 边界条件（空文件、单行文件、末行替换）
+- [x] Prepare 阶段**不执行任何文件写入**
 
 ## Evidence
 

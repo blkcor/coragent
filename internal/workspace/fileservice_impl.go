@@ -45,7 +45,27 @@ func (s *fileServiceImpl) Search(name string) (fs.FS, string, error) {
 }
 
 func (s *fileServiceImpl) Write(name string, data []byte, expectedSHA256 string) (string, error) {
-	return "", ErrReadOnly
+	clean, err := s.w.Clean(name)
+	if err != nil {
+		return "", err
+	}
+	if err := s.w.RejectSymlinks(clean); err != nil {
+		return "", err
+	}
+	actual := sha256Hex(data)
+	if expectedSHA256 != "" && actual != expectedSHA256 {
+		return "", fmt.Errorf("workspace: write SHA256 mismatch for %s: expected %s, got %s", clean, expectedSHA256, actual)
+	}
+	if err := s.w.WriteFile(clean, data); err != nil {
+		return "", err
+	}
+	return actual, nil
+}
+
+func sha256Hex(data []byte) string {
+	h := sha256.New()
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (s *fileServiceImpl) Identity(name string) (string, error) {

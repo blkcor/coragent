@@ -1,0 +1,1 @@
+{"session_id":"s1","run_id":"r1","cursor":14,"time":"2025-08-01T12:00:00Z","kind":"approval_required","payload":{"request_id":"req-abc123","tool_call_id":"call-1","path":"a.go","target":"L3-L4","diff":"--- a.go\n+++ a.go\n@@ -3,2 +3,2 @@\n-old\n+new\n","is_sensitive":false}}

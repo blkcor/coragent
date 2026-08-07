@@ -54,6 +54,8 @@ const (
 	KindRetryScheduled Kind = "retry_scheduled"
 	KindSessionResumed Kind = "session_resumed"
 	KindSessionClosed  Kind = "session_closed"
+	// KindApprovalRequired is emitted when a prepared action needs user approval.
+	KindApprovalRequired Kind = "approval_required"
 )
 
 // FailureCause is the typed reason a run failed. Failure causes are
@@ -135,6 +137,17 @@ type RetryScheduledPayload struct {
 	Class       string `json:"class"`
 }
 
+// ApprovalRequiredPayload carries a prepared patch for user approval.
+// The diff field is for display only and is never persisted to transcript.
+type ApprovalRequiredPayload struct {
+	RequestID   string `json:"request_id"`
+	ToolCallID  string `json:"tool_call_id"`
+	Path        string `json:"path"`
+	Target      string `json:"target"`
+	Diff        string `json:"diff"`
+	IsSensitive bool   `json:"is_sensitive"`
+}
+
 type SessionResumedPayload struct{}
 type SessionClosedPayload struct{}
 
@@ -142,18 +155,19 @@ type SessionClosedPayload struct{}
 // single list of event kinds; tests use it to prove every kind round-trips
 // through JSON and every payload stays pure data.
 var payloadFactories = map[Kind]func() any{
-	KindRunStarted:     func() any { return &RunStartedPayload{} },
-	KindRunCompleted:   func() any { return &RunCompletedPayload{} },
-	KindRunFailed:      func() any { return &RunFailedPayload{} },
-	KindRunCancelled:   func() any { return &RunCancelledPayload{} },
-	KindAssistantText:  func() any { return &AssistantTextPayload{} },
-	KindAssistantDelta: func() any { return &AssistantDeltaPayload{} },
-	KindToolStarted:    func() any { return &ToolStartedPayload{} },
-	KindToolFinished:   func() any { return &ToolFinishedPayload{} },
-	KindWarning:        func() any { return &WarningPayload{} },
-	KindRetryScheduled: func() any { return &RetryScheduledPayload{} },
-	KindSessionResumed: func() any { return &SessionResumedPayload{} },
-	KindSessionClosed:  func() any { return &SessionClosedPayload{} },
+	KindRunStarted:       func() any { return &RunStartedPayload{} },
+	KindRunCompleted:     func() any { return &RunCompletedPayload{} },
+	KindRunFailed:        func() any { return &RunFailedPayload{} },
+	KindRunCancelled:     func() any { return &RunCancelledPayload{} },
+	KindAssistantText:    func() any { return &AssistantTextPayload{} },
+	KindAssistantDelta:   func() any { return &AssistantDeltaPayload{} },
+	KindToolStarted:      func() any { return &ToolStartedPayload{} },
+	KindToolFinished:     func() any { return &ToolFinishedPayload{} },
+	KindWarning:          func() any { return &WarningPayload{} },
+	KindRetryScheduled:   func() any { return &RetryScheduledPayload{} },
+	KindSessionResumed:   func() any { return &SessionResumedPayload{} },
+	KindSessionClosed:    func() any { return &SessionClosedPayload{} },
+	KindApprovalRequired: func() any { return &ApprovalRequiredPayload{} },
 }
 
 // New builds an Event, marshaling the kind-specific payload into the
@@ -233,6 +247,10 @@ func (e Event) Validate() error {
 	case *RetryScheduledPayload:
 		if p.Attempt <= 0 || p.DelayMillis < 0 || p.Class == "" {
 			return fmt.Errorf("%w: invalid retry metadata", ErrInvalid)
+		}
+	case *ApprovalRequiredPayload:
+		if p.RequestID == "" || p.ToolCallID == "" || p.Path == "" || p.Target == "" {
+			return fmt.Errorf("%w: incomplete approval required payload", ErrInvalid)
 		}
 	}
 	return nil

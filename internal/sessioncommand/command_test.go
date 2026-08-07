@@ -21,10 +21,12 @@ func goldenCases() []struct {
 		{"cancel.json", KindCancel},
 		{"resume.json", KindResume},
 		{"close.json", KindClose},
+		{"approve.json", KindApprove},
+		{"deny.json", KindDeny},
 	}
 }
 
-// TestGoldenFixturesRoundTrip proves every M1 command kind round-trips
+// TestGoldenFixturesRoundTrip proves every command kind round-trips
 // through JSON without losing fields, using the on-disk fixtures.
 func TestGoldenFixturesRoundTrip(t *testing.T) {
 	for _, tc := range goldenCases() {
@@ -68,7 +70,6 @@ func TestGoldenFixturesRoundTrip(t *testing.T) {
 			if again.ID != cmd.ID || again.Kind != cmd.Kind {
 				t.Errorf("envelope round-trip mismatch: got %+v, want %+v", again, cmd)
 			}
-			// Raw payload bytes may differ in whitespace; compare semantically.
 			assertJSONEqual(t, cmd.Payload, again.Payload)
 		})
 	}
@@ -109,6 +110,44 @@ func TestConstructorsRoundTrip(t *testing.T) {
 	if _, err := decoded.DecodeCancel(); err != nil {
 		t.Fatalf("DecodeCancel: %v", err)
 	}
+
+	approve, err := NewApprove("cmd-3", "req-abc123")
+	if err != nil {
+		t.Fatalf("NewApprove: %v", err)
+	}
+	data, err = json.Marshal(approve)
+	if err != nil {
+		t.Fatalf("marshal approve: %v", err)
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal approve: %v", err)
+	}
+	ap, err := decoded.DecodeApprove()
+	if err != nil {
+		t.Fatalf("DecodeApprove: %v", err)
+	}
+	if ap.RequestID != "req-abc123" {
+		t.Errorf("request_id = %q, want req-abc123", ap.RequestID)
+	}
+
+	deny, err := NewDeny("cmd-4", "req-def456")
+	if err != nil {
+		t.Fatalf("NewDeny: %v", err)
+	}
+	data, err = json.Marshal(deny)
+	if err != nil {
+		t.Fatalf("marshal deny: %v", err)
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal deny: %v", err)
+	}
+	dp, err := decoded.DecodeDeny()
+	if err != nil {
+		t.Fatalf("DecodeDeny: %v", err)
+	}
+	if dp.RequestID != "req-def456" {
+		t.Errorf("request_id = %q, want req-def456", dp.RequestID)
+	}
 }
 
 func TestValidateRejectsMalformedCommands(t *testing.T) {
@@ -118,12 +157,16 @@ func TestValidateRejectsMalformedCommands(t *testing.T) {
 	}
 
 	cases := map[string]Command{
-		"empty id":     {ID: "", Kind: KindSubmit, Payload: submit.Payload},
-		"unknown kind": {ID: "cmd-x", Kind: "steer", Payload: json.RawMessage(`{}`)},
-		"no payload":   {ID: "cmd-x", Kind: KindSubmit},
-		"bad payload":  {ID: "cmd-x", Kind: KindSubmit, Payload: json.RawMessage(`{"prompt": 42}`)},
-		"empty prompt": {ID: "cmd-x", Kind: KindSubmit, Payload: json.RawMessage(`{"prompt": ""}`)},
-		"huge prompt":  {ID: "cmd-x", Kind: KindSubmit, Payload: mustPayload(t, strings.Repeat("x", 256*1024+1))},
+		"empty id":              {ID: "", Kind: KindSubmit, Payload: submit.Payload},
+		"unknown kind":          {ID: "cmd-x", Kind: "steer", Payload: json.RawMessage(`{}`)},
+		"no payload":            {ID: "cmd-x", Kind: KindSubmit},
+		"bad payload":           {ID: "cmd-x", Kind: KindSubmit, Payload: json.RawMessage(`{"prompt": 42}`)},
+		"empty prompt":          {ID: "cmd-x", Kind: KindSubmit, Payload: json.RawMessage(`{"prompt": ""}`)},
+		"huge prompt":           {ID: "cmd-x", Kind: KindSubmit, Payload: mustPayload(t, strings.Repeat("x", 256*1024+1))},
+		"approve empty req_id":  {ID: "cmd-x", Kind: KindApprove, Payload: json.RawMessage(`{"request_id":""}`)},
+		"deny empty req_id":     {ID: "cmd-x", Kind: KindDeny, Payload: json.RawMessage(`{"request_id":""}`)},
+		"approve bad payload":   {ID: "cmd-x", Kind: KindApprove, Payload: json.RawMessage(`{"request_id": 1}`)},
+		"approve unknown field": {ID: "cmd-x", Kind: KindApprove, Payload: json.RawMessage(`{"request_id":"r","extra":1}`)},
 	}
 	for name, cmd := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -150,6 +193,21 @@ func TestDecodeRejectsWrongKind(t *testing.T) {
 	}
 	if _, err := cancel.DecodeSubmit(); err == nil {
 		t.Error("DecodeSubmit on a cancel command succeeded, want error")
+	}
+	if _, err := cancel.DecodeApprove(); err == nil {
+		t.Error("DecodeApprove on a cancel command succeeded, want error")
+	}
+}
+
+func TestNewApproveRejectsEmptyRequestID(t *testing.T) {
+	if _, err := NewApprove("cmd-1", ""); err == nil {
+		t.Error("NewApprove with empty request_id succeeded, want error")
+	}
+}
+
+func TestNewDenyRejectsEmptyRequestID(t *testing.T) {
+	if _, err := NewDeny("cmd-1", ""); err == nil {
+		t.Error("NewDeny with empty request_id succeeded, want error")
 	}
 }
 

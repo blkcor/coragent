@@ -28,6 +28,10 @@ const (
 	KindResume Kind = "resume"
 	// KindClose closes a session non-destructively.
 	KindClose Kind = "close"
+	// KindApprove approves a prepared action identified by request_id.
+	KindApprove Kind = "approve"
+	// KindDeny denies a prepared action identified by request_id.
+	KindDeny Kind = "deny"
 )
 
 // Command is the serializable SessionCommand envelope. Every command has a
@@ -49,6 +53,16 @@ type SubmitPayload struct {
 // active run. The struct exists so later fields (for example an explicit run
 // target) extend the payload without changing the envelope.
 type CancelPayload struct{}
+
+// ApprovePayload carries the request_id of the prepared action to approve.
+type ApprovePayload struct {
+	RequestID string `json:"request_id"`
+}
+
+// DenyPayload carries the request_id of the prepared action to deny.
+type DenyPayload struct {
+	RequestID string `json:"request_id"`
+}
 
 type ResumePayload struct{}
 type ClosePayload struct{}
@@ -87,6 +101,30 @@ func NewClose(id string) (Command, error) {
 	return Command{ID: id, Kind: KindClose, Payload: payload}, nil
 }
 
+// NewApprove builds an approve command with the given ID and request_id.
+func NewApprove(id, requestID string) (Command, error) {
+	if requestID == "" {
+		return Command{}, errors.New("sessioncommand: approve request_id is required")
+	}
+	payload, err := json.Marshal(ApprovePayload{RequestID: requestID})
+	if err != nil {
+		return Command{}, fmt.Errorf("sessioncommand: marshal approve payload: %w", err)
+	}
+	return Command{ID: id, Kind: KindApprove, Payload: payload}, nil
+}
+
+// NewDeny builds a deny command with the given ID and request_id.
+func NewDeny(id, requestID string) (Command, error) {
+	if requestID == "" {
+		return Command{}, errors.New("sessioncommand: deny request_id is required")
+	}
+	payload, err := json.Marshal(DenyPayload{RequestID: requestID})
+	if err != nil {
+		return Command{}, fmt.Errorf("sessioncommand: marshal deny payload: %w", err)
+	}
+	return Command{ID: id, Kind: KindDeny, Payload: payload}, nil
+}
+
 // ForSession correlates a command to an intended session. Empty SessionID is
 // accepted for direct in-process callers; frontends should set it.
 func (c Command) ForSession(sessionID string) Command {
@@ -123,6 +161,24 @@ func (c Command) Validate() error {
 	case KindClose:
 		_, err := c.DecodeClose()
 		return err
+	case KindApprove:
+		p, err := c.DecodeApprove()
+		if err != nil {
+			return err
+		}
+		if p.RequestID == "" {
+			return errors.New("sessioncommand: approve request_id is empty")
+		}
+		return nil
+	case KindDeny:
+		p, err := c.DecodeDeny()
+		if err != nil {
+			return err
+		}
+		if p.RequestID == "" {
+			return errors.New("sessioncommand: deny request_id is empty")
+		}
+		return nil
 	default:
 		return fmt.Errorf("sessioncommand: unknown command kind %q", c.Kind)
 	}
@@ -170,6 +226,30 @@ func (c Command) DecodeCancel() (CancelPayload, error) {
 	var p CancelPayload
 	if err := c.decode(&p); err != nil {
 		return CancelPayload{}, err
+	}
+	return p, nil
+}
+
+// DecodeApprove decodes the payload of an approve command.
+func (c Command) DecodeApprove() (ApprovePayload, error) {
+	if c.Kind != KindApprove {
+		return ApprovePayload{}, fmt.Errorf("sessioncommand: cannot decode kind %q as %q", c.Kind, KindApprove)
+	}
+	var p ApprovePayload
+	if err := c.decode(&p); err != nil {
+		return ApprovePayload{}, err
+	}
+	return p, nil
+}
+
+// DecodeDeny decodes the payload of a deny command.
+func (c Command) DecodeDeny() (DenyPayload, error) {
+	if c.Kind != KindDeny {
+		return DenyPayload{}, fmt.Errorf("sessioncommand: cannot decode kind %q as %q", c.Kind, KindDeny)
+	}
+	var p DenyPayload
+	if err := c.decode(&p); err != nil {
+		return DenyPayload{}, err
 	}
 	return p, nil
 }

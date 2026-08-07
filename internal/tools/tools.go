@@ -31,14 +31,15 @@ type base struct {
 	projector *dataproj.Projector
 }
 
-// NewCatalog creates exactly read, list, and search. No mutation, command, or
-// network capability is reachable from the returned tools.
+// NewCatalog creates read, list, search, and patch. patch is registered but
+// its execution is gated behind M2 write authority until S1.3; Prepare is
+// fully operational and read-only.
 func NewCatalog(fs workspace.FileService, projector *dataproj.Projector) []action.Tool {
 	if projector == nil {
 		projector = dataproj.New()
 	}
 	b := base{fs: fs, projector: projector}
-	return []action.Tool{&listTool{base: b}, &readTool{base: b}, &searchTool{base: b}}
+	return []action.Tool{&listTool{base: b}, &patchTool{base: b}, &readTool{base: b}, &searchTool{base: b}}
 }
 
 type readArgs struct {

@@ -175,7 +175,7 @@ func TestBrokerUnknownCancellationAndBatchPairing(t *testing.T) {
 	if len(results) != 2 || results[0].CallID != "c3" || results[1].CallID != "c4" || results[1].Outcome != transcript.ToolResultSkipped {
 		t.Fatalf("batch = %+v", results)
 	}
-	if got := broker.Catalog(); len(got) != 3 || got[0].Name != "list" || got[1].Name != "read" || got[2].Name != "search" {
+	if got := broker.Catalog(); len(got) != 4 || got[0].Name != "list" || got[1].Name != "patch" || got[2].Name != "read" || got[3].Name != "search" {
 		t.Fatalf("catalog = %+v", got)
 	}
 }

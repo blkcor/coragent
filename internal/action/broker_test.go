@@ -90,7 +90,107 @@ func TestBrokerCancelsBlockingToolPromptly(t *testing.T) {
 	}
 }
 
-func TestBrokerBatchPairsCancelledThenSkipped(t *testing.T) {
+// --- S1.3: effect-based execution ---
+
+type writeTool struct{ prepareErr error }
+
+func (t writeTool) Definition() provider.ToolDefinition {
+	return provider.ToolDefinition{Name: "write", Schema: json.RawMessage(`{"type":"object"}`)}
+}
+func (t writeTool) Prepare(context.Context, json.RawMessage) (Prepared, error) {
+	if t.prepareErr != nil {
+		return Prepared{}, t.prepareErr
+	}
+	return Prepared{Tool: "write", Effects: []Effect{EffectWrite}, Patch: &PreparedPatch{RequestID: "req-001"}}, nil
+}
+func (t writeTool) Execute(context.Context, Prepared) Execution {
+	return Execution{Outcome: transcript.ToolResultSuccess, Content: "written"}
+}
+
+type unknownEffectTool struct{}
+
+func (t unknownEffectTool) Definition() provider.ToolDefinition {
+	return provider.ToolDefinition{Name: "unknown-eff", Schema: json.RawMessage(`{"type":"object"}`)}
+}
+func (t unknownEffectTool) Prepare(context.Context, json.RawMessage) (Prepared, error) {
+	return Prepared{Tool: "unknown-eff", Effects: []Effect{"bad"}}, nil
+}
+func (t unknownEffectTool) Execute(context.Context, Prepared) Execution {
+	return Execution{Outcome: transcript.ToolResultError, Content: "should not reach"}
+}
+
+func TestBrokerBlocksUnknownEffect(t *testing.T) {
+	broker, err := NewBroker(unknownEffectTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := broker.Execute(context.Background(), provider.ToolCall{
+		ID: "c1", Name: "unknown-eff", Arguments: json.RawMessage(`{}`),
+	})
+	if result.Outcome != transcript.ToolResultBlocked {
+		t.Fatalf("outcome = %v, want blocked", result.Outcome)
+	}
+	if !strings.Contains(result.Content, "not allowed") {
+		t.Fatalf("content = %s, want policy message", result.Content)
+	}
+}
+
+func TestBrokerEffectWriteStopsAfterPrepare(t *testing.T) {
+	broker, err := NewBroker(writeTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := broker.Execute(context.Background(), provider.ToolCall{
+		ID: "c1", Name: "write", Arguments: json.RawMessage(`{}`),
+	})
+	if result.Outcome != transcript.ToolResultSuccess {
+		t.Fatalf("outcome = %v, want success (prepared)", result.Outcome)
+	}
+	if !strings.Contains(result.Content, "awaiting execution") {
+		t.Fatalf("content = %s, want 'awaiting execution'", result.Content)
+	}
+}
+
+func TestBrokerExecutePreparedRunsWriteTool(t *testing.T) {
+	broker, err := NewBroker(writeTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := Prepared{Tool: "write", Effects: []Effect{EffectWrite}, Patch: &PreparedPatch{RequestID: "req-001"}}
+	result := broker.ExecutePrepared(context.Background(), prepared)
+	if result.Outcome != transcript.ToolResultSuccess {
+		t.Fatalf("outcome = %v, want success", result.Outcome)
+	}
+	if result.Content != "written" {
+		t.Fatalf("content = %s, want 'written'", result.Content)
+	}
+}
+
+func TestBrokerExecutePreparedRejectsReadEffect(t *testing.T) {
+	broker, err := NewBroker(writeTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := Prepared{Tool: "write", Effects: []Effect{EffectRead}}
+	result := broker.ExecutePrepared(context.Background(), prepared)
+	if result.Outcome != transcript.ToolResultError {
+		t.Fatalf("outcome = %v, want error", result.Outcome)
+	}
+}
+
+func TestBrokerExecutePreparedRejectsUnknownTool(t *testing.T) {
+	broker, err := NewBroker(writeTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := Prepared{Tool: "nonexistent", Effects: []Effect{EffectWrite}, Patch: &PreparedPatch{RequestID: "req-001"}}
+	result := broker.ExecutePrepared(context.Background(), prepared)
+	if result.Outcome != transcript.ToolResultError {
+		t.Fatalf("outcome = %v, want error", result.Outcome)
+	}
+}
+
+func TestBrokerBatchPairsPreparedThenSkipped(t *testing.T) {
 	broker, err := NewBroker(largeTool{})
 	if err != nil {
 		t.Fatal(err)

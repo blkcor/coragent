@@ -13,18 +13,19 @@ var fixtureTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func samplePayloads() map[Kind]any {
 	return map[Kind]any{
-		KindRunStarted:     RunStartedPayload{Prompt: "explain what main.go does"},
-		KindRunCompleted:   RunCompletedPayload{},
-		KindRunFailed:      RunFailedPayload{Cause: CauseProviderPermanent},
-		KindRunCancelled:   RunCancelledPayload{},
-		KindAssistantText:  AssistantTextPayload{Text: "main.go wires the CLI to the engine."},
-		KindAssistantDelta: AssistantDeltaPayload{Text: "main.go "},
-		KindToolStarted:    ToolStartedPayload{CallID: "call-1", Name: "read"},
-		KindToolFinished:   ToolFinishedPayload{CallID: "call-1", Outcome: "success"},
-		KindWarning:        WarningPayload{Code: "detected_credential_in_prompt"},
-		KindRetryScheduled: RetryScheduledPayload{Attempt: 1, DelayMillis: 500, Class: "rate_limit"},
-		KindSessionResumed: SessionResumedPayload{},
-		KindSessionClosed:  SessionClosedPayload{},
+		KindRunStarted:       RunStartedPayload{Prompt: "explain what main.go does"},
+		KindRunCompleted:     RunCompletedPayload{},
+		KindRunFailed:        RunFailedPayload{Cause: CauseProviderPermanent},
+		KindRunCancelled:     RunCancelledPayload{},
+		KindAssistantText:    AssistantTextPayload{Text: "main.go wires the CLI to the engine."},
+		KindAssistantDelta:   AssistantDeltaPayload{Text: "main.go "},
+		KindToolStarted:      ToolStartedPayload{CallID: "call-1", Name: "read"},
+		KindToolFinished:     ToolFinishedPayload{CallID: "call-1", Outcome: "success"},
+		KindWarning:          WarningPayload{Code: "detected_credential_in_prompt"},
+		KindRetryScheduled:   RetryScheduledPayload{Attempt: 1, DelayMillis: 500, Class: "rate_limit"},
+		KindSessionResumed:   SessionResumedPayload{},
+		KindSessionClosed:    SessionClosedPayload{},
+		KindApprovalRequired: ApprovalRequiredPayload{RequestID: "req-abc", ToolCallID: "call-1", Path: "a.go", Target: "L3", Diff: "-old\n+new\n", IsSensitive: false},
 	}
 }
 
@@ -75,15 +76,47 @@ func TestEveryKindRoundTrips(t *testing.T) {
 	}
 }
 
+// TestApprovalRequiredDiffRoundTripsUnicode proves the display diff survives
+// multiline text, Unicode, and JSON-significant characters intact.
+func TestApprovalRequiredDiffRoundTripsUnicode(t *testing.T) {
+	diff := "--- a.go\n+++ b.go\n@@ -1,1 +1,1 @@\n-问候 \"old\"\t\\path\n+✨ 新行 \U0001F600 `quotes`\n"
+	ev, err := New("sess-1", "run-1", 3, fixtureTime, KindApprovalRequired, ApprovalRequiredPayload{
+		RequestID: "req-u", ToolCallID: "call-u", Path: "目录/文件.go",
+		Target: "L1", Diff: diff, IsSensitive: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back Event
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var payload ApprovalRequiredPayload
+	if err := back.DecodePayload(&payload); err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if payload.Diff != diff {
+		t.Errorf("diff corrupted:\ngot:  %q\nwant: %q", payload.Diff, diff)
+	}
+	if payload.Path != "目录/文件.go" {
+		t.Errorf("path corrupted: %q", payload.Path)
+	}
+}
+
 // TestGoldenFixturesRoundTrip proves the on-disk protocol fixtures decode
 // and re-encode without losing fields.
 func TestGoldenFixturesRoundTrip(t *testing.T) {
 	files := map[string]Kind{
-		"run_started.json":    KindRunStarted,
-		"run_completed.json":  KindRunCompleted,
-		"run_failed.json":     KindRunFailed,
-		"run_cancelled.json":  KindRunCancelled,
-		"assistant_text.json": KindAssistantText,
+		"run_started.json":       KindRunStarted,
+		"run_completed.json":     KindRunCompleted,
+		"run_failed.json":        KindRunFailed,
+		"run_cancelled.json":     KindRunCancelled,
+		"assistant_text.json":    KindAssistantText,
+		"approval_required.json": KindApprovalRequired,
 	}
 	for file, kind := range files {
 		t.Run(file, func(t *testing.T) {
