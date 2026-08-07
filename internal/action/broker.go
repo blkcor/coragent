@@ -289,4 +289,3 @@ func (b *Broker) ExecuteBatch(ctx context.Context, calls []provider.ToolCall) []
 	}
 	return results
 }
-

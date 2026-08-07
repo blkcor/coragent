@@ -1246,17 +1246,30 @@ func (s *Session) reconcileInterrupted(runID string) error {
 func (s *Session) reconcileActionRecordsLocked(runID string) error {
 	// Build a map of request_id -> its last lifecycle state
 	type actionRecovery struct {
-		prepared   *transcript.ActionPreparedPayload
-		approved   bool
-		committing bool
-		committed  bool
+		prepared    *transcript.ActionPreparedPayload
+		approved    bool
+		denied      bool
+		committing  bool
+		committed   bool
+		aborted     bool
+		abortReason transcript.AbortReason
 	}
 	actions := make(map[string]*actionRecovery)
+	// Calls that already have a tool result must never receive a second one;
+	// a crash can land after the result was persisted but before the run
+	// outcome, and recovery runs again on the next resume.
+	hasResult := make(map[string]bool)
 	for _, rec := range s.records {
 		if rec.RunID != runID {
 			continue
 		}
 		switch rec.Kind {
+		case transcript.KindToolResult:
+			var p transcript.ToolResultPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			hasResult[p.CallID] = true
 		case transcript.KindActionPrepared:
 			var p transcript.ActionPreparedPayload
 			if err := rec.DecodePayload(&p); err != nil {
@@ -1270,6 +1283,23 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 			}
 			if a, ok := actions[p.RequestID]; ok {
 				a.approved = true
+			}
+		case transcript.KindActionDenied:
+			var p transcript.ActionDeniedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			if a, ok := actions[p.RequestID]; ok {
+				a.denied = true
+			}
+		case transcript.KindActionAborted:
+			var p transcript.ActionAbortedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			if a, ok := actions[p.RequestID]; ok {
+				a.aborted = true
+				a.abortReason = p.Reason
 			}
 		case transcript.KindActionCommitting:
 			var p transcript.ActionCommittingPayload
@@ -1290,12 +1320,47 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 		}
 	}
 
+	// ensureResult appends a tool result only when the call has none yet.
+	ensureResult := func(payload transcript.ToolResultPayload) error {
+		if hasResult[payload.CallID] {
+			return nil
+		}
+		if err := s.appendPayloadLocked(runID, transcript.KindToolResult, payload); err != nil {
+			return err
+		}
+		hasResult[payload.CallID] = true
+		return nil
+	}
+
 	for reqID, a := range actions {
-		if a.committed {
+		switch {
+		case a.committed:
 			// Committed but may be missing tool_result — add success result
-			if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+			if err := ensureResult(transcript.ToolResultPayload{
 				CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultSuccess,
 				Content: "patch recovered: the write was already committed before the crash",
+			}); err != nil {
+				return err
+			}
+			continue
+		case a.aborted:
+			// Abort was already journaled; only the tool result may be missing.
+			outcome := transcript.ToolResultError
+			if a.abortReason == transcript.AbortCancelled {
+				outcome = transcript.ToolResultCancelled
+			}
+			if err := ensureResult(transcript.ToolResultPayload{
+				CallID: a.prepared.ToolCallID, Outcome: outcome,
+				Content: "patch recovery: action was aborted before the crash",
+			}); err != nil {
+				return err
+			}
+			continue
+		case a.denied:
+			// Denial was already journaled; only the tool result may be missing.
+			if err := ensureResult(transcript.ToolResultPayload{
+				CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultBlocked,
+				Content: "patch recovery: action was denied before the crash",
 			}); err != nil {
 				return err
 			}
@@ -1319,7 +1384,7 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 				}); err != nil {
 					return err
 				}
-				if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+				if err := ensureResult(transcript.ToolResultPayload{
 					CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultError,
 					Content: "patch recovery: cannot read file: " + fsErr,
 				}); err != nil {
@@ -1332,7 +1397,7 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 				}); err != nil {
 					return err
 				}
-				if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+				if err := ensureResult(transcript.ToolResultPayload{
 					CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultSuccess,
 					Content: "patch recovered: write was already committed before the crash",
 				}); err != nil {
@@ -1340,7 +1405,7 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 				}
 			case diskSHA256 == a.prepared.SourceSHA256:
 				// Write didn't happen, source unchanged — auto-retry
-				if err := s.retryCommittedActionLocked(runID, reqID, a.prepared); err != nil {
+				if err := s.retryCommittedActionLocked(runID, reqID, a.prepared, ensureResult); err != nil {
 					return err
 				}
 			default:
@@ -1350,7 +1415,7 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 				}); err != nil {
 					return err
 				}
-				if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+				if err := ensureResult(transcript.ToolResultPayload{
 					CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultError,
 					Content: "patch recovery: file was modified externally, re-prepare and re-approve required",
 				}); err != nil {
@@ -1365,7 +1430,7 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 		}); err != nil {
 			return err
 		}
-		if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+		if err := ensureResult(transcript.ToolResultPayload{
 			CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultCancelled,
 			Content: "patch recovery: action was not committed before crash",
 		}); err != nil {
@@ -1378,7 +1443,7 @@ func (s *Session) reconcileActionRecordsLocked(runID string) error {
 // retryCommittedActionLocked re-executes a patch whose committing record was
 // written but whose execute did not run (or whose result was not recorded).
 // The source file is unchanged so the original approval remains valid.
-func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.ActionPreparedPayload) error {
+func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.ActionPreparedPayload, ensureResult func(transcript.ToolResultPayload) error) error {
 	// Find the original tool call to re-prepare
 	var toolCall *transcript.ToolCallPayload
 	for _, rec := range s.records {
@@ -1399,7 +1464,7 @@ func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.
 		}); err != nil {
 			return err
 		}
-		return s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+		return ensureResult(transcript.ToolResultPayload{
 			CallID: p.ToolCallID, Outcome: transcript.ToolResultError,
 			Content: "patch recovery: cannot find original tool call to re-execute",
 		})
@@ -1413,7 +1478,7 @@ func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.
 		}); err != nil {
 			return err
 		}
-		return s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+		return ensureResult(transcript.ToolResultPayload{
 			CallID: p.ToolCallID, Outcome: transcript.ToolResultError,
 			Content: "patch recovery: re-prepare failed: " + err.Error(),
 		})
@@ -1425,7 +1490,7 @@ func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.
 		}); err != nil {
 			return err
 		}
-		return s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+		return ensureResult(transcript.ToolResultPayload{
 			CallID: p.ToolCallID, Outcome: transcript.ToolResultError,
 			Content: "patch recovery: re-prepared action differs from original",
 		})
@@ -1451,7 +1516,7 @@ func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.
 		}
 		result.Content = "patch recovery: auto-retry failed: " + result.Content
 	}
-	return s.appendPayloadLocked(runID, transcript.KindToolResult, result)
+	return ensureResult(result)
 }
 
 func validateToolCalls(calls []provider.ToolCall) error {

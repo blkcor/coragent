@@ -628,9 +628,9 @@ func TestCrashRecoveryPreparedWithoutApproved(t *testing.T) {
 	})
 	appendRec(t, durable, runID, transcript.KindActionPrepared, transcript.ActionPreparedPayload{
 		RequestID: "req-1", ToolCallID: "call-1", Path: "f.txt",
-		SourceSHA256: sha256Str("line1\nline2\nline3\n"),
+		SourceSHA256:   sha256Str("line1\nline2\nline3\n"),
 		ExpectedSHA256: sha256Str("line1\nnew line2\nline3\n"),
-		DiffDigest: "d",
+		DiffDigest:     "d",
 	})
 	// No approved — crash before user could respond
 

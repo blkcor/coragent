@@ -54,3 +54,6 @@ Retain test output and crash-injection matrices under `artifacts/m2/s1/1.6/`.
   因为源文件未被外部修改
 - `stale_aborted` 需要模型重新发起 tool call + 重新 prepare + 重新审批
 - 崩溃恢复在 Resume 流程的早期执行，在任何新的模型请求之前（与 M1 reconcile 相同位置）
+- 恢复必须是幂等的：生命周期已终态（committed/denied/aborted）或 tool_result 已持久化
+  的 action，恢复只补缺失的 tool_result，绝不重复追加（验收后回归测试
+  `approval_recovery_edge_test.go` 覆盖这些崩溃窗口）
