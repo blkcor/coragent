@@ -157,7 +157,7 @@ func TestBrokerExecutePreparedRunsWriteTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := Prepared{Tool: "write", Effects: []Effect{EffectWrite}, Patch: &PreparedPatch{RequestID: "req-001"}}
-	result := broker.ExecutePrepared(context.Background(), prepared)
+	result := broker.ExecutePrepared(context.Background(), prepared, "call-1")
 	if result.Outcome != transcript.ToolResultSuccess {
 		t.Fatalf("outcome = %v, want success", result.Outcome)
 	}
@@ -172,7 +172,7 @@ func TestBrokerExecutePreparedRejectsReadEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := Prepared{Tool: "write", Effects: []Effect{EffectRead}}
-	result := broker.ExecutePrepared(context.Background(), prepared)
+	result := broker.ExecutePrepared(context.Background(), prepared, "call-1")
 	if result.Outcome != transcript.ToolResultError {
 		t.Fatalf("outcome = %v, want error", result.Outcome)
 	}
@@ -184,7 +184,7 @@ func TestBrokerExecutePreparedRejectsUnknownTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := Prepared{Tool: "nonexistent", Effects: []Effect{EffectWrite}, Patch: &PreparedPatch{RequestID: "req-001"}}
-	result := broker.ExecutePrepared(context.Background(), prepared)
+	result := broker.ExecutePrepared(context.Background(), prepared, "call-1")
 	if result.Outcome != transcript.ToolResultError {
 		t.Fatalf("outcome = %v, want error", result.Outcome)
 	}

@@ -259,7 +259,7 @@ func (e *Engine) createOrLoad(ctx context.Context, workspacePath, sessionID stri
 		Instructions: docs, InstructionSource: func(refreshCtx context.Context) ([]prompt.Instruction, error) {
 			return prompt.DiscoverInstructions(refreshCtx, w, ".", projector)
 		}, Projector: projector, Logger: e.cfg.Logger, Now: e.cfg.Now, Resource: w,
-		Sleep: e.cfg.Sleep, Jitter: e.cfg.Jitter,
+		Sleep: e.cfg.Sleep, Jitter: e.cfg.Jitter, FileService: workspace.NewFileService(w),
 	})
 	if err != nil {
 		_ = w.Close()

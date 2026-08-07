@@ -20,6 +20,7 @@ import (
 	"github.com/blkcor/coragent/internal/sessioncommand"
 	"github.com/blkcor/coragent/internal/store"
 	"github.com/blkcor/coragent/internal/transcript"
+	"github.com/blkcor/coragent/internal/workspace"
 )
 
 type State string
@@ -56,6 +57,7 @@ type Config struct {
 	Sleep             SleepFunc
 	Jitter            JitterFunc
 	Resource          io.Closer
+	FileService       workspace.FileService
 }
 
 type ActiveTool struct {
@@ -183,6 +185,9 @@ type Session struct {
 	terminalHook   func(terminalStage) error
 	eventHook      func(event.Kind) error
 	transcriptHook func(transcript.Kind) error
+
+	approvalCh  map[string]chan sessioncommand.Command
+	fileService workspace.FileService
 }
 
 type terminalStage string
@@ -243,7 +248,8 @@ func NewSession(id string, cfg Config) (*Session, error) {
 		docs: append([]prompt.Instruction(nil), cfg.Instructions...), instructionSource: cfg.InstructionSource, projector: projector,
 		durable: cfg.Durable, resource: cfg.Resource, now: now, logger: logger, sleep: sleep, jitter: jitter,
 		state: StateIdle, seen: make(map[string]struct{}), subs: make(map[int]*subscriber),
-		memoryBudget: make(map[string]store.RunBudget),
+		memoryBudget: make(map[string]store.RunBudget), approvalCh: make(map[string]chan sessioncommand.Command),
+		fileService: cfg.FileService,
 	}
 	if cfg.Durable != nil {
 		m := cfg.Durable.Manifest()
@@ -543,6 +549,44 @@ func (s *Session) Apply(ctx context.Context, cmd sessioncommand.Command) error {
 		}
 		s.mu.Unlock()
 		return err
+
+	case sessioncommand.KindApprove:
+		payload, err := cmd.DecodeApprove()
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if err := s.recordCommandLocked(cmd.ID); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		ch, ok := s.approvalCh[payload.RequestID]
+		if !ok {
+			s.mu.Unlock()
+			return fmt.Errorf("engine: no pending approval for request %q", payload.RequestID)
+		}
+		ch <- cmd.ForSession(s.id)
+		s.mu.Unlock()
+		return nil
+
+	case sessioncommand.KindDeny:
+		payload, err := cmd.DecodeDeny()
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if err := s.recordCommandLocked(cmd.ID); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		ch, ok := s.approvalCh[payload.RequestID]
+		if !ok {
+			s.mu.Unlock()
+			return fmt.Errorf("engine: no pending approval for request %q", payload.RequestID)
+		}
+		ch <- cmd.ForSession(s.id)
+		s.mu.Unlock()
+		return nil
 	}
 	s.mu.Unlock()
 	return fmt.Errorf("engine: unsupported command kind %q", cmd.Kind)
@@ -682,13 +726,23 @@ func (s *Session) run(ctx context.Context, done chan struct{}, runID, goal strin
 				s.mu.Lock()
 				s.activeTool = &ActiveTool{CallID: call.ID, Name: call.Name}
 				emitErr := s.emitLocked(runID, event.KindToolStarted, event.ToolStartedPayload{CallID: call.ID, Name: call.Name})
+				s.mu.Unlock()
 				if emitErr != nil {
-					s.faultRunLocked(runID, done, emitErr)
-					s.mu.Unlock()
+					s.faultRun(runID, done, emitErr)
 					return
 				}
-				s.mu.Unlock()
-				result = s.broker.Execute(ctx, call)
+				prepared, prepareErr := s.broker.Prepare(ctx, call)
+				if prepareErr != nil {
+					if errors.Is(prepareErr, context.Canceled) {
+						result = transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultCancelled, Content: "cancelled"}
+					} else {
+						result = transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultError, Content: prepareErr.Error()}
+					}
+				} else if prepared.NeedsApproval() {
+					result = s.approvalFlow(ctx, runID, call, prepared)
+				} else {
+					result = s.broker.ExecuteRead(ctx, prepared, call.ID)
+				}
 			}
 			s.mu.Lock()
 			err := s.appendPayloadLocked(runID, transcript.KindToolResult, result)
@@ -714,6 +768,94 @@ func (s *Session) run(ctx context.Context, done chan struct{}, runID, goal strin
 			return
 		}
 	}
+}
+
+// approvalFlow handles the full approval lifecycle for a prepared write action:
+// write action_prepared → emit approval_required → wait for approve/deny →
+// on approve: action_approved → action_committing → execute → action_committed
+// on deny: action_denied → return denied result
+func (s *Session) approvalFlow(ctx context.Context, runID string, call provider.ToolCall, prepared action.Prepared) transcript.ToolResultPayload {
+	reqID := prepared.Patch.RequestID
+	s.mu.Lock()
+	if err := s.appendPayloadLocked(runID, transcript.KindActionPrepared, transcript.ActionPreparedPayload{
+		RequestID:      reqID,
+		ToolCallID:     call.ID,
+		Path:           prepared.Patch.Path,
+		SourceSHA256:   prepared.Patch.SourceSHA256,
+		ExpectedSHA256: prepared.Patch.ExpectedSHA256,
+		DiffDigest:     prepared.Patch.DiffDigest,
+	}); err != nil {
+		s.faultRunLocked(runID, nil, err)
+		s.mu.Unlock()
+		return transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultError, Content: "failed to persist action_prepared"}
+	}
+	ch := make(chan sessioncommand.Command, 1)
+	s.approvalCh[reqID] = ch
+	if err := s.emitLocked(runID, event.KindApprovalRequired, event.ApprovalRequiredPayload{
+		RequestID: reqID, ToolCallID: call.ID, Path: prepared.Patch.Path,
+		Target: prepared.Patch.Target, Diff: prepared.Patch.Diff, IsSensitive: prepared.Patch.IsSensitive,
+	}); err != nil {
+		delete(s.approvalCh, reqID)
+		s.faultRunLocked(runID, nil, err)
+		s.mu.Unlock()
+		return transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultError, Content: "failed to emit approval_required"}
+	}
+	s.mu.Unlock()
+
+	var cmd sessioncommand.Command
+	select {
+	case cmd = <-ch:
+	case <-ctx.Done():
+		s.mu.Lock()
+		delete(s.approvalCh, reqID)
+		s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortCancelled,
+		})
+		s.mu.Unlock()
+		return transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultCancelled, Content: "approval cancelled"}
+	}
+
+	s.mu.Lock()
+	delete(s.approvalCh, reqID)
+	if cmd.Kind == sessioncommand.KindDeny {
+		s.appendPayloadLocked(runID, transcript.KindActionDenied, transcript.ActionDeniedPayload{
+			RequestID: reqID, CommandID: cmd.ID,
+		})
+		s.mu.Unlock()
+		return transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultBlocked, Content: "action denied by user"}
+	}
+
+	// Approve path
+	if err := s.appendPayloadLocked(runID, transcript.KindActionApproved, transcript.ActionApprovedPayload{
+		RequestID: reqID, CommandID: cmd.ID,
+	}); err != nil {
+		s.faultRunLocked(runID, nil, err)
+		s.mu.Unlock()
+		return transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultError, Content: "failed to persist action_approved"}
+	}
+	if err := s.appendPayloadLocked(runID, transcript.KindActionCommitting, transcript.ActionCommittingPayload{
+		RequestID: reqID,
+	}); err != nil {
+		s.faultRunLocked(runID, nil, err)
+		s.mu.Unlock()
+		return transcript.ToolResultPayload{CallID: call.ID, Outcome: transcript.ToolResultError, Content: "failed to persist action_committing"}
+	}
+	s.mu.Unlock()
+
+	result := s.broker.ExecutePrepared(ctx, prepared, call.ID)
+
+	s.mu.Lock()
+	if result.Outcome == transcript.ToolResultSuccess {
+		s.appendPayloadLocked(runID, transcript.KindActionCommitted, transcript.ActionCommittedPayload{
+			RequestID: reqID, ActualSHA256: prepared.Patch.ExpectedSHA256,
+		})
+	} else {
+		s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortStale,
+		})
+	}
+	s.mu.Unlock()
+	return result
 }
 
 func (s *Session) buildRequest(goal string) (provider.Request, error) {
@@ -1062,6 +1204,11 @@ func (s *Session) reconcileInterrupted(runID string) error {
 		}
 	}
 	if !terminalRecord {
+		// Reconcile action records before tool calls, since action recovery
+		// may add tool results that close open calls.
+		if err := s.reconcileActionRecordsLocked(runID); err != nil {
+			return err
+		}
 		open, err := transcript.OpenToolCallsForRun(s.records, runID)
 		if err != nil {
 			return err
@@ -1086,10 +1233,225 @@ func (s *Session) reconcileInterrupted(runID string) error {
 			return err
 		}
 	}
-	if err := s.durable.ReconcileRun(runID, s.now()); err != nil {
-		return err
+	if s.durable != nil {
+		if err := s.durable.ReconcileRun(runID, s.now()); err != nil {
+			return err
+		}
 	}
 	return transcript.ValidateTranscript(s.records)
+}
+
+// reconcileActionRecordsLocked scans action lifecycle records and applies the
+// crash recovery matrix for unclosed mutations.
+func (s *Session) reconcileActionRecordsLocked(runID string) error {
+	// Build a map of request_id -> its last lifecycle state
+	type actionRecovery struct {
+		prepared   *transcript.ActionPreparedPayload
+		approved   bool
+		committing bool
+		committed  bool
+	}
+	actions := make(map[string]*actionRecovery)
+	for _, rec := range s.records {
+		if rec.RunID != runID {
+			continue
+		}
+		switch rec.Kind {
+		case transcript.KindActionPrepared:
+			var p transcript.ActionPreparedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			actions[p.RequestID] = &actionRecovery{prepared: &p}
+		case transcript.KindActionApproved:
+			var p transcript.ActionApprovedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			if a, ok := actions[p.RequestID]; ok {
+				a.approved = true
+			}
+		case transcript.KindActionCommitting:
+			var p transcript.ActionCommittingPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			if a, ok := actions[p.RequestID]; ok {
+				a.committing = true
+			}
+		case transcript.KindActionCommitted:
+			var p transcript.ActionCommittedPayload
+			if err := rec.DecodePayload(&p); err != nil {
+				return err
+			}
+			if a, ok := actions[p.RequestID]; ok {
+				a.committed = true
+			}
+		}
+	}
+
+	for reqID, a := range actions {
+		if a.committed {
+			// Committed but may be missing tool_result — add success result
+			if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+				CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultSuccess,
+				Content: "patch recovered: the write was already committed before the crash",
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if a.committing {
+			// Check disk to determine recovery path
+			diskSHA256, fsErr := "", ""
+			if s.fileService != nil {
+				h, err := s.fileService.Identity(a.prepared.Path)
+				if err != nil {
+					fsErr = err.Error()
+				} else {
+					diskSHA256 = h
+				}
+			}
+			switch {
+			case fsErr != "":
+				if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+					RequestID: reqID, Reason: transcript.AbortStale,
+				}); err != nil {
+					return err
+				}
+				if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+					CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultError,
+					Content: "patch recovery: cannot read file: " + fsErr,
+				}); err != nil {
+					return err
+				}
+			case diskSHA256 == a.prepared.ExpectedSHA256:
+				// Write already happened — record committed
+				if err := s.appendPayloadLocked(runID, transcript.KindActionCommitted, transcript.ActionCommittedPayload{
+					RequestID: reqID, ActualSHA256: diskSHA256,
+				}); err != nil {
+					return err
+				}
+				if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+					CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultSuccess,
+					Content: "patch recovered: write was already committed before the crash",
+				}); err != nil {
+					return err
+				}
+			case diskSHA256 == a.prepared.SourceSHA256:
+				// Write didn't happen, source unchanged — auto-retry
+				if err := s.retryCommittedActionLocked(runID, reqID, a.prepared); err != nil {
+					return err
+				}
+			default:
+				// Disk content matches neither — stale
+				if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+					RequestID: reqID, Reason: transcript.AbortStale,
+				}); err != nil {
+					return err
+				}
+				if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+					CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultError,
+					Content: "patch recovery: file was modified externally, re-prepare and re-approve required",
+				}); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		// prepared (with or without approved) but no committing → cancelled
+		if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortCancelled,
+		}); err != nil {
+			return err
+		}
+		if err := s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+			CallID: a.prepared.ToolCallID, Outcome: transcript.ToolResultCancelled,
+			Content: "patch recovery: action was not committed before crash",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// retryCommittedActionLocked re-executes a patch whose committing record was
+// written but whose execute did not run (or whose result was not recorded).
+// The source file is unchanged so the original approval remains valid.
+func (s *Session) retryCommittedActionLocked(runID, reqID string, p *transcript.ActionPreparedPayload) error {
+	// Find the original tool call to re-prepare
+	var toolCall *transcript.ToolCallPayload
+	for _, rec := range s.records {
+		if rec.Kind == transcript.KindToolCall {
+			var tc transcript.ToolCallPayload
+			if err := rec.DecodePayload(&tc); err != nil {
+				return err
+			}
+			if tc.CallID == p.ToolCallID {
+				toolCall = &tc
+				break
+			}
+		}
+	}
+	if toolCall == nil {
+		if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortStale,
+		}); err != nil {
+			return err
+		}
+		return s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+			CallID: p.ToolCallID, Outcome: transcript.ToolResultError,
+			Content: "patch recovery: cannot find original tool call to re-execute",
+		})
+	}
+
+	call := provider.ToolCall{ID: toolCall.CallID, Name: toolCall.Name, Arguments: toolCall.Arguments}
+	prepared, err := s.broker.Prepare(context.Background(), call)
+	if err != nil {
+		if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortStale,
+		}); err != nil {
+			return err
+		}
+		return s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+			CallID: p.ToolCallID, Outcome: transcript.ToolResultError,
+			Content: "patch recovery: re-prepare failed: " + err.Error(),
+		})
+	}
+	// Verify the patch hasn't changed
+	if prepared.Patch == nil || prepared.Patch.SourceSHA256 != p.SourceSHA256 || prepared.Patch.ExpectedSHA256 != p.ExpectedSHA256 {
+		if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortStale,
+		}); err != nil {
+			return err
+		}
+		return s.appendPayloadLocked(runID, transcript.KindToolResult, transcript.ToolResultPayload{
+			CallID: p.ToolCallID, Outcome: transcript.ToolResultError,
+			Content: "patch recovery: re-prepared action differs from original",
+		})
+	}
+
+	// Release lock for execution (ExecutePrepared may do I/O)
+	s.mu.Unlock()
+	result := s.broker.ExecutePrepared(context.Background(), prepared, p.ToolCallID)
+	s.mu.Lock()
+
+	if result.Outcome == transcript.ToolResultSuccess {
+		if err := s.appendPayloadLocked(runID, transcript.KindActionCommitted, transcript.ActionCommittedPayload{
+			RequestID: reqID, ActualSHA256: prepared.Patch.ExpectedSHA256,
+		}); err != nil {
+			return err
+		}
+		result.Content = "patch recovered: auto-retry succeeded (file was unchanged)"
+	} else {
+		if err := s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+			RequestID: reqID, Reason: transcript.AbortStale,
+		}); err != nil {
+			return err
+		}
+		result.Content = "patch recovery: auto-retry failed: " + result.Content
+	}
+	return s.appendPayloadLocked(runID, transcript.KindToolResult, result)
 }
 
 func validateToolCalls(calls []provider.ToolCall) error {

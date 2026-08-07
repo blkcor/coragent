@@ -129,49 +129,62 @@ func (b *Broker) SkippedResult(callID string) transcript.ToolResultPayload {
 	})
 }
 
-// Execute routes resolution, preparation, and scoped execution. EffectRead
-// tools execute immediately (prepare + execute in one call). EffectWrite tools
-// stop after prepare; the caller must use ExecutePrepared to commit.
-func (b *Broker) Execute(ctx context.Context, call provider.ToolCall) transcript.ToolResultPayload {
+// NeedsApproval returns true when the prepared action requires user approval
+// before execution may proceed.
+func (p Prepared) NeedsApproval() bool {
+	for _, e := range p.Effects {
+		if e == EffectWrite {
+			return true
+		}
+	}
+	return false
+}
+
+// Prepare validates, projects, and prepares a tool call without side effects.
+// For EffectWrite actions the caller must complete the approval flow and call
+// ExecutePrepared. For EffectRead actions the caller may call ExecuteRead or
+// use the convenience method Execute (which calls both Prepare and execute).
+func (b *Broker) Prepare(ctx context.Context, call provider.ToolCall) (Prepared, error) {
 	projected, blocked := b.ProjectCalls([]provider.ToolCall{call})
 	call = projected[0]
 	if blocked[0] {
-		return b.BlockedResult(call.ID)
+		return Prepared{}, fmt.Errorf("tool call blocked: detected credential material")
 	}
-	result := transcript.ToolResultPayload{CallID: call.ID}
 	tool, ok := b.tools[call.Name]
 	if !ok {
-		result.Outcome = transcript.ToolResultError
-		result.Content = fmt.Sprintf("unknown tool %q", call.Name)
-		return b.project(result)
+		return Prepared{}, fmt.Errorf("unknown tool %q", call.Name)
 	}
 	if err := ctx.Err(); err != nil {
-		result.Outcome = transcript.ToolResultCancelled
-		result.Content = "tool call cancelled before preparation"
-		return b.project(result)
+		return Prepared{}, err
 	}
 	prepared, err := tool.Prepare(ctx, call.Arguments)
 	if err != nil {
-		result.Outcome = transcript.ToolResultError
-		result.Content = "invalid tool arguments: " + safeError(err)
-		return b.project(result)
+		return Prepared{}, fmt.Errorf("invalid tool arguments: %w", err)
 	}
 	if prepared.Tool != call.Name || len(prepared.Effects) != 1 {
-		result.Outcome = transcript.ToolResultError
-		result.Content = "tool produced an invalid prepared action"
-		return b.project(result)
+		return Prepared{}, fmt.Errorf("tool produced an invalid prepared action")
 	}
-	switch prepared.Effects[0] {
-	case EffectRead:
-		exec := tool.Execute(ctx, prepared)
-		result.Outcome = exec.Outcome
-		result.Content = exec.Content
-	case EffectWrite:
-		result.Outcome = transcript.ToolResultSuccess
-		result.Content = "action prepared; awaiting execution"
-	default:
-		result.Outcome = transcript.ToolResultBlocked
-		result.Content = "tool effect is not allowed by current authority policy"
+	return prepared, nil
+}
+
+// ExecuteRead executes a read-only prepared action immediately.
+func (b *Broker) ExecuteRead(ctx context.Context, prepared Prepared, callID string) transcript.ToolResultPayload {
+	tool, ok := b.tools[prepared.Tool]
+	if !ok {
+		return transcript.ToolResultPayload{
+			CallID: callID, Outcome: transcript.ToolResultError,
+			Content: fmt.Sprintf("unknown tool %q", prepared.Tool),
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return transcript.ToolResultPayload{
+			CallID: callID, Outcome: transcript.ToolResultCancelled,
+			Content: "tool call cancelled before execution",
+		}
+	}
+	exec := tool.Execute(ctx, prepared)
+	result := transcript.ToolResultPayload{
+		CallID: callID, Outcome: exec.Outcome, Content: exec.Content,
 	}
 	if result.Outcome == "" {
 		result.Outcome = transcript.ToolResultError
@@ -180,34 +193,62 @@ func (b *Broker) Execute(ctx context.Context, call provider.ToolCall) transcript
 	return b.project(result)
 }
 
+// Execute routes resolution, preparation, and scoped execution. EffectRead
+// tools execute immediately (prepare + execute in one call). EffectWrite tools
+// stop after prepare; the caller must use ExecutePrepared to commit.
+func (b *Broker) Execute(ctx context.Context, call provider.ToolCall) transcript.ToolResultPayload {
+	result := transcript.ToolResultPayload{CallID: call.ID}
+	prepared, err := b.Prepare(ctx, call)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			result.Outcome = transcript.ToolResultCancelled
+			result.Content = "tool call cancelled before preparation"
+		} else {
+			result.Outcome = transcript.ToolResultError
+			result.Content = err.Error()
+		}
+		return b.project(result)
+	}
+	switch prepared.Effects[0] {
+	case EffectRead:
+		return b.ExecuteRead(ctx, prepared, call.ID)
+	case EffectWrite:
+		result.Outcome = transcript.ToolResultSuccess
+		result.Content = "action prepared; awaiting execution"
+	default:
+		result.Outcome = transcript.ToolResultBlocked
+		result.Content = "tool effect is not allowed by current authority policy"
+	}
+	return b.project(result)
+}
+
 // ExecutePrepared executes a previously prepared EffectWrite action. It
 // performs no approval check (that is the caller's responsibility in S1.6)
-// and delegates stale detection to the tool's Execute method.
-func (b *Broker) ExecutePrepared(ctx context.Context, prepared Prepared) transcript.ToolResultPayload {
+// and delegates stale detection to the tool's Execute method. callID links
+// the result to the original tool call for transcript pairing.
+func (b *Broker) ExecutePrepared(ctx context.Context, prepared Prepared, callID string) transcript.ToolResultPayload {
 	tool, ok := b.tools[prepared.Tool]
 	if !ok {
 		return transcript.ToolResultPayload{
-			Outcome: transcript.ToolResultError,
+			CallID: callID, Outcome: transcript.ToolResultError,
 			Content: fmt.Sprintf("unknown tool %q", prepared.Tool),
 		}
 	}
 	if len(prepared.Effects) != 1 || prepared.Effects[0] != EffectWrite {
 		return transcript.ToolResultPayload{
-			Outcome: transcript.ToolResultError,
+			CallID: callID, Outcome: transcript.ToolResultError,
 			Content: "only write-effect actions can be executed via ExecutePrepared",
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return transcript.ToolResultPayload{
-			Outcome: transcript.ToolResultCancelled,
+			CallID: callID, Outcome: transcript.ToolResultCancelled,
 			Content: "tool call cancelled before execution",
 		}
 	}
 	exec := tool.Execute(ctx, prepared)
 	result := transcript.ToolResultPayload{
-		CallID:  prepared.PatchID(),
-		Outcome: exec.Outcome,
-		Content: exec.Content,
+		CallID: callID, Outcome: exec.Outcome, Content: exec.Content,
 	}
 	if result.Outcome == "" {
 		result.Outcome = transcript.ToolResultError
@@ -249,8 +290,3 @@ func (b *Broker) ExecuteBatch(ctx context.Context, calls []provider.ToolCall) []
 	return results
 }
 
-func safeError(err error) string {
-	// Tool validation errors are constructed from schema field names and safe
-	// classifications, never from file content or runtime credentials.
-	return err.Error()
-}

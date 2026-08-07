@@ -1,6 +1,6 @@
 # S1.6 Engine Approval Loop and Crash Recovery
 
-**Status:** pending acceptance
+**Status:** accepted
 **Prerequisite:** [S1.5 accepted](05-action-journal-transcript.md)
 
 ## Goal
@@ -31,18 +31,18 @@
 
 ## Acceptance
 
-- [ ] 正常路径：Prepare → approve → Execute → committed → tool_result(success)
-- [ ] 拒绝路径：Prepare → deny → tool_result(denied)，文件未被修改
-- [ ] Cancel 穿透审批等待：cancel 命令终止阻塞的 waitForApproval
-- [ ] 审批超时不适用（M2 审批无超时，用户想等多久等多久）
-- [ ] Resume 恢复（模拟崩溃注入）：
-  - [ ] committed → 补 tool_result(success)
-  - [ ] committing + 磁盘 = expected → recovered_success
-  - [ ] committing + 磁盘 = source → interrupted_no_effect，自动重试成功
-  - [ ] committing + 磁盘不匹配 → stale_aborted
-- [ ] 恢复后永不自动重放已 committed 的写入
-- [ ] 离线测试：全路径覆盖 + `committing` 边界崩溃注入矩阵
-- [ ] `go test -race ./...` 通过
+- [x] 正常路径：Prepare → approve → Execute → committed → tool_result(success)
+- [x] 拒绝路径：Prepare → deny → tool_result(denied)，文件未被修改
+- [x] Cancel 穿透审批等待：cancel 命令终止阻塞的 waitForApproval
+- [x] 审批超时不适用（M2 审批无超时，用户想等多久等多久）
+- [x] Resume 恢复（模拟崩溃注入）：
+  - [x] committed → 补 tool_result(success)
+  - [x] committing + 磁盘 = expected → recovered_success
+  - [x] committing + 磁盘 = source → interrupted_no_effect，自动重试成功
+  - [x] committing + 磁盘不匹配 → stale_aborted
+- [x] 恢复后永不自动重放已 committed 的写入
+- [x] 离线测试：全路径覆盖 + `committing` 边界崩溃注入矩阵
+- [x] `go test -race ./...` 通过
 
 ## Evidence
 

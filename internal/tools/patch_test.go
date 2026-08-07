@@ -633,7 +633,7 @@ func TestPatchExecutePreparedWritesFile(t *testing.T) {
 		Arguments: patchArgsJSON("a.go", "L3", "func NewFunc() {}"),
 		Effects:   []action.Effect{action.EffectWrite},
 		Patch:     p,
-	})
+	}, "call-1")
 	if got.Outcome != transcript.ToolResultSuccess {
 		t.Fatalf("ExecutePrepared = %+v", got)
 	}
@@ -662,7 +662,7 @@ func TestPatchStaleDetectionRejectsChangedSource(t *testing.T) {
 		Arguments: patchArgsJSON("a.go", "L3", "func NewFunc() {}"),
 		Effects:   []action.Effect{action.EffectWrite},
 		Patch:     p,
-	})
+	}, "call-1")
 	if got.Outcome != transcript.ToolResultError {
 		t.Fatalf("expected error due to stale detection, got %s: %s", got.Outcome, got.Content)
 	}
@@ -689,7 +689,7 @@ func TestPatchExecutePreparedSHA256MismatchFails(t *testing.T) {
 		Arguments: patchArgsJSON("a.go", "L3", "func NewFunc() {}"),
 		Effects:   []action.Effect{action.EffectWrite},
 		Patch:     p,
-	})
+	}, "call-1")
 	if got.Outcome != transcript.ToolResultError {
 		t.Fatalf("expected error due to SHA256 mismatch, got %s: %s", got.Outcome, got.Content)
 	}
