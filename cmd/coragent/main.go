@@ -213,34 +213,37 @@ func newRuntime(workspacePath string) (*engine.Engine, error) {
 }
 
 func interact(s *engine.Session, onePrompt string, resumed bool, in io.Reader, out, errOut io.Writer, interrupt <-chan os.Signal) int {
+	// One shared buffered reader for both the idle prompt and approval
+	// answers. A second buffer over the same stream would swallow piped
+	// input that was already read ahead.
+	reader := bufio.NewReader(in)
 	if onePrompt != "" {
-		if err := runTurn(s, onePrompt, in, out, interrupt); err != nil {
+		if err := runTurn(s, onePrompt, reader, out, interrupt); err != nil {
 			writeLine(errOut, err)
 			return 1
 		}
 		return 0
 	}
-	scanner := bufio.NewScanner(in)
 	for {
 		writeText(out, "> ")
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				writeLine(errOut, err)
-				return 1
-			}
-			return 0
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if err := runTurn(s, line, in, out, interrupt); err != nil {
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
 			writeLine(errOut, err)
+			return 1
+		}
+		if text := strings.TrimSpace(line); text != "" {
+			if rerr := runTurn(s, text, reader, out, interrupt); rerr != nil {
+				writeLine(errOut, rerr)
+			}
+		}
+		if err != nil {
+			// EOF (Ctrl-D) at the idle prompt exits without closing the session.
+			return 0
 		}
 	}
 }
 
-func runTurn(s *engine.Session, text string, in io.Reader, out io.Writer, interrupt <-chan os.Signal) error {
+func runTurn(s *engine.Session, text string, in *bufio.Reader, out io.Writer, interrupt <-chan os.Signal) error {
 	observation, unsubscribe := s.Observe(s.HighWaterMark())
 	defer unsubscribe()
 	cmd, err := sessioncommand.NewSubmit(newCommandID(), text)
@@ -367,11 +370,11 @@ func renderApprovalPrompt(out io.Writer, approval event.ApprovalRequiredPayload)
 
 func renderDiff(out io.Writer, diff string) {
 	const (
-		red    = "\033[31m"
-		green  = "\033[32m"
-		cyan   = "\033[36m"
-		bold   = "\033[1m"
-		reset  = "\033[0m"
+		red   = "\033[31m"
+		green = "\033[32m"
+		cyan  = "\033[36m"
+		bold  = "\033[1m"
+		reset = "\033[0m"
 	)
 	for _, line := range strings.Split(diff, "\n") {
 		if line == "" {
@@ -392,15 +395,14 @@ func renderDiff(out io.Writer, diff string) {
 	}
 }
 
-func readApprovalInput(in io.Reader, interrupt <-chan os.Signal) (string, error) {
+func readApprovalInput(in *bufio.Reader, interrupt <-chan os.Signal) (string, error) {
 	type result struct {
 		text string
 		err  error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		reader := bufio.NewReader(in)
-		text, err := reader.ReadString('\n')
+		text, err := in.ReadString('\n')
 		ch <- result{strings.TrimSpace(text), err}
 	}()
 	select {

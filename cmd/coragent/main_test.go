@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -356,6 +357,207 @@ func TestCLI_CtrlDWhileIdleExitsWithoutClosingSession(t *testing.T) {
 	if runErr != nil || !strings.Contains(stdout, sessionID+"\topen") {
 		t.Fatalf("sessions after idle exit: %v\nstdout=%s\nstderr=%s", runErr, stdout, stderr)
 	}
+}
+
+// newApprovalScenario builds a workspace with one patchable file and a
+// scripted Provider whose first turn emits a patch tool call and whose later
+// turns answer with plain text.
+func newApprovalScenario(t *testing.T, fileContent, replacement string) (home, workspace string) {
+	t.Helper()
+	home = t.TempDir()
+	workspace = t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "note.txt"), []byte(fileContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests.Add(1) == 1 {
+			writeToolCall(w, "call-patch", "patch", map[string]any{
+				"path": "note.txt", "target": "L2", "replacement": replacement,
+			})
+			return
+		}
+		writeAssistantText(w, "Patch turn resolved.")
+	}))
+	t.Cleanup(server.Close)
+	writeCLISettings(t, home, server.URL)
+	t.Setenv("HOME", home)
+	t.Setenv("CORAGENT_CLI_SUBPROCESS_KEY", "subprocess-runtime-value")
+	return home, workspace
+}
+
+func runApprovalPrompt(t *testing.T, home, workspace, input string) string {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-C", workspace, "--prompt", "patch line 2"}, strings.NewReader(input), &out, &errOut, make(chan os.Signal)); code != 0 {
+		t.Fatalf("approval run code=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+	}
+	t.Logf("CLI session transcript (stdin %q):\n%s", input, out.String())
+	return out.String()
+}
+
+// TestCLIApprovalApprovePath proves typing "a" at the approval prompt sends an
+// approve SessionCommand and the prepared patch is executed.
+func TestCLIApprovalApprovePath(t *testing.T) {
+	home, workspace := newApprovalScenario(t, "alpha\nbeta\ngamma\n", "beta patched")
+	out := runApprovalPrompt(t, home, workspace, "a\n")
+	assertContainsAll(t, out,
+		"--- Approval Required ---", "Path: note.txt",
+		"--- note.txt", "+++ note.txt", "@@ -2,1 +2,1 @@",
+		"-beta", "+beta patched",
+		"[a] Approve  [d] Deny", "[a/d] > ",
+		"[success call-patch]", "Patch turn resolved.")
+	content, err := os.ReadFile(filepath.Join(workspace, "note.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "alpha\nbeta patched\ngamma\n" {
+		t.Fatalf("file content = %q", content)
+	}
+}
+
+// TestCLIApprovalDenyPath proves typing "d" sends a deny SessionCommand, the
+// tool result is blocked, and the file stays untouched.
+func TestCLIApprovalDenyPath(t *testing.T) {
+	home, workspace := newApprovalScenario(t, "alpha\nbeta\ngamma\n", "beta patched")
+	out := runApprovalPrompt(t, home, workspace, "d\n")
+	assertContainsAll(t, out,
+		"--- Approval Required ---", "[a] Approve  [d] Deny",
+		"[blocked call-patch]", "Patch turn resolved.")
+	content, err := os.ReadFile(filepath.Join(workspace, "note.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "alpha\nbeta\ngamma\n" {
+		t.Fatalf("file modified despite denial: %q", content)
+	}
+}
+
+// TestCLIApprovalInvalidInputRePrompts proves unrecognized input re-renders
+// the option line without sending a command, and that the approve letter is
+// case-insensitive.
+func TestCLIApprovalInvalidInputRePrompts(t *testing.T) {
+	home, workspace := newApprovalScenario(t, "alpha\nbeta\ngamma\n", "beta patched")
+	out := runApprovalPrompt(t, home, workspace, "x\nA\n")
+	assertContainsAll(t, out,
+		"Press 'a' to approve or 'd' to deny", "[success call-patch]")
+	if got := strings.Count(out, "[a/d] > "); got < 2 {
+		t.Fatalf("option line rendered %d times, want at least 2: %s", got, out)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "note.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "alpha\nbeta patched\ngamma\n" {
+		t.Fatalf("uppercase approve did not execute patch: %q", content)
+	}
+}
+
+// TestCLIApprovalSensitiveDiffBlocked proves a patch whose source file carries
+// detected credential material renders the blocked message instead of the
+// diff, never leaks the credential, and still honors the deny option.
+func TestCLIApprovalSensitiveDiffBlocked(t *testing.T) {
+	const credential = "AKIA0123456789ABCDEF"
+	home, workspace := newApprovalScenario(t, "alpha\nbeta\n"+credential+"\n", "beta patched")
+	out := runApprovalPrompt(t, home, workspace, "d\n")
+	assertContainsAll(t, out,
+		"[BLOCKED: credential detected in patch]", "[a] Approve  [d] Deny",
+		"[blocked call-patch]")
+	if strings.Contains(out, credential) {
+		t.Fatalf("credential leaked into CLI output: %s", out)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "note.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "alpha\nbeta\n"+credential+"\n" {
+		t.Fatalf("sensitive patch applied despite denial: %q", content)
+	}
+}
+
+// lockedBuffer serializes writes from the CLI subprocess with reads from the
+// test goroutine waiting on rendered output.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestCLIApprovalInterruptCancelsRun proves Ctrl+C while the approval prompt
+// waits cancels the run: no patch is applied, the outcome is persisted, and a
+// resumed session replays the cancellation and accepts follow-up turns.
+func TestCLIApprovalInterruptCancelsRun(t *testing.T) {
+	home, workspace := newApprovalScenario(t, "alpha\nbeta\ngamma\n", "beta patched")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0],
+		"-test.run=^TestCLIProcessHelper$", "--", "-C", workspace, "--prompt", "patch line 2")
+	cmd.Env = []string{
+		"HOME=" + home,
+		"CORAGENT_CLI_PROCESS_HELPER=1",
+		"CORAGENT_CLI_SUBPROCESS_KEY=subprocess-runtime-value",
+		"NO_PROXY=127.0.0.1,localhost,[::1]",
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := &lockedBuffer{}
+	stderr := &lockedBuffer{}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stdout.String(), "[a/d] > ") {
+		if time.Now().After(deadline) {
+			t.Fatalf("approval prompt never rendered: stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("signal CLI: %v", err)
+	}
+	_ = cmd.Wait()
+	_ = stdin.Close()
+	t.Logf("CLI session transcript (Ctrl+C at approval prompt):\n%s", stdout.String())
+
+	assertContainsAll(t, stdout.String(), "--- Approval Required ---", "[a] Approve  [d] Deny")
+	if !strings.Contains(stderr.String(), "interrupted") {
+		t.Fatalf("interrupt error absent from stderr: %s", stderr.String())
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "note.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "alpha\nbeta\ngamma\n" {
+		t.Fatalf("file modified despite cancellation: %q", content)
+	}
+	match := regexp.MustCompile(`session (sess-[0-9a-f]+)`).FindStringSubmatch(stdout.String())
+	if len(match) != 2 {
+		t.Fatalf("session ID absent: %s", stdout.String())
+	}
+
+	resumedOut, resumedErr, runErr := runCLIProcess(t, home, "Continue now.\n", "resume", match[1])
+	if runErr != nil {
+		t.Fatalf("resume process: %v\nstdout=%s\nstderr=%s", runErr, resumedOut, resumedErr)
+	}
+	assertContainsAll(t, resumedOut, "[cancelled]", "Patch turn resolved.")
 }
 
 // TestCLIProcessHelper is launched by TestCLI_ActualProcessExitResumeAndFollowUpReads

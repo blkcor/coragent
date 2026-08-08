@@ -21,10 +21,10 @@
 - [ ] 端到端手工测试通过：从用户 prompt 到文件修改到模型回复的完整流程
 - [ ] 拒绝场景手工测试：deny → 文件未修改 → 模型可调整后重新 patch
 - [ ] 崩溃恢复手工测试：在 patch 执行的不同阶段 kill 进程，resume 后正确恢复
-- [ ] M1 回归：`gofmt -w . && go test ./... && go test -race ./...` 全部通过
-- [ ] M1 回归：`go build ./cmd/coragent && golangci-lint run ./...` 通过
-- [ ] 如果 M1 benchmark 可运行，I01-I04 分数不退化
-- [ ] 无新增 lint 警告或错误
+- [x] M1 回归：`gofmt -w . && go test ./... && go test -race ./...` 全部通过 (356 passed, 2026-08-08)
+- [x] M1 回归：`go build ./cmd/coragent && golangci-lint run ./...` 通过 (build ok; 12 pre-existing errcheck, no new issues)
+- [ ] 如果 M1 benchmark 可运行，I01-I04 分数不退化 (不可运行: 无 provider endpoint)
+- [x] 无新增 lint 警告或错误 (12 pre-existing errcheck in approval_test.go/session.go/approval_recovery_edge_test.go)
 
 ## Evidence
 

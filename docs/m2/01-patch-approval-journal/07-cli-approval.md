@@ -31,7 +31,12 @@
 
 ## Evidence
 
-Retain CLI session transcripts (input/output) under `artifacts/m2/s1/1.7/`.
+Retain CLI session transcripts (input/output) under `artifacts/m2/s1/1.7/`:
+
+- `test_output.txt`：`cmd/coragent` 包 `TestCLIApproval*` 五个验收场景的完整
+  CLI 会话 transcript（approve / deny / 无效输入重提示 / 敏感 diff 阻断 /
+  审批等待中 Ctrl+C 取消并 resume）
+- `go-test.txt`、`go-test-race.txt`：全量离线测试与 race 测试结果
 
 ## Design notes
 
@@ -40,3 +45,5 @@ Retain CLI session transcripts (input/output) under `artifacts/m2/s1/1.7/`.
 - 单字母输入（`a`/`d`）映射为对应的 SessionCommand（`approve`/`deny`），
   Engine 和协议层不感知 CLI 的简化交互方式
 - 复用 M1 的 Event 订阅机制（`observeEvents`），不新增通信通道
+- 空闲提示符与审批回答共享同一个 `bufio.Reader`（验收时发现每次审批读取
+  新建 reader 会吞掉管道输入中已预读的后续行，已在 S1.7 验收中修复）
