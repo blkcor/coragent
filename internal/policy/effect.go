@@ -11,17 +11,22 @@ import (
 type EffectClassification int
 
 const (
+	// EffectUnknown is the fail-closed zero value. Missing or uninitialized
+	// classification must never become an automatic allow decision.
+	EffectUnknown EffectClassification = iota
 	// EffectSafe indicates a read-only command with no side effects.
-	EffectSafe EffectClassification = iota
+	EffectSafe
 	// EffectWorkspace indicates a command that may mutate the workspace.
 	EffectWorkspace
-	// EffectDangerous indicates a high-risk command that always requires approval.
-	// This classification cannot be overridden by model hints.
+	// EffectDangerous indicates a high-risk command that M2 policy always denies.
+	// This classification cannot be overridden by model hints or session memory.
 	EffectDangerous
 )
 
 func (e EffectClassification) String() string {
 	switch e {
+	case EffectUnknown:
+		return "unknown"
 	case EffectSafe:
 		return "safe"
 	case EffectWorkspace:
