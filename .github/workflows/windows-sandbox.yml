@@ -32,6 +32,6 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Verify Windows sandbox runtime
-        run: go test -count=1 ./internal/sandbox/windows
+        run: go test -count=1 -timeout 60s ./internal/sandbox/windows
       - name: Detect Windows sandbox races
-        run: go test -count=1 -race ./internal/sandbox/windows
+        run: go test -count=1 -race -timeout 60s ./internal/sandbox/windows
