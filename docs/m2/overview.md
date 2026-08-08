@@ -79,18 +79,45 @@ S1 完成后，用户可以通过 CLI 完成：调查问题 → 模型提出修�
 7. [CLI approval interaction](01-patch-approval-journal/07-cli-approval.md)
 8. [S1 integration acceptance](01-patch-approval-journal/08-s1-integration.md)
 
-### Slice 2: Command Tool + Sandbox (planned, not designed)
+### Slice 2: Command Tool + Sandbox
 
-Design deferred. Scope from roadmap:
+Design documents in `02-command-sandbox/`.
 
-- Command tool with timeout, process-group cancellation, bounded output
-- macOS OS-level sandbox; disabled on non-sandboxable platforms
-- Minimal process environment (no ambient credentials)
-- Process-group supervisor
-- Credential detection for process output
-- Result persistence when output exceeds model budget
-- Approval extended to command execution
-- Run Budget: active process time
+1. [Sandbox Runtime Interface + NOP](02-command-sandbox/01-sandbox-interface.md)
+2. [macOS Sandbox: Seatbelt](02-command-sandbox/02-macos-sandbox.md)
+3. [Linux Sandbox: Landlock + seccomp](02-command-sandbox/03-linux-sandbox.md)
+4. [Windows Sandbox: NOP + ConPTY](02-command-sandbox/03-windows-sandbox.md)
+5. [Effect Analyzer: Pattern-based Classification](02-command-sandbox/04-effect-analyzer.md)
+6. [Policy Engine + Session Memory](02-command-sandbox/05-policy-engine.md)
+7. [Command Tool: Prepare + Execution Identity](02-command-sandbox/06-command-tool-prepare.md)
+8. [Command Execution + Output Pipeline](02-command-sandbox/07-command-execution-output.md)
+9. [CLI Command Approval](02-command-sandbox/08-cli-command-approval.md)
+10. [Run Budget: Active Process Time](02-command-sandbox/09-run-budget-process-time.md)
+11. [S2 Integration Acceptance](02-command-sandbox/10-s2-integration.md)
+
+Architecture:
+
+```
+Tool Request → Effect Analyzer → Policy Engine → allow/approve/deny
+                                                    │
+                                                    v
+                                           Sandbox Runtime
+                                           ┌──────────────┐
+                                           │  PTY Manager  │
+                                           │  master↔slave │
+                                           └──────┬───────┘
+                                                  │
+                                           Platform Backend
+                                           macos / linux / windows (nop)
+```
+
+Key design decisions:
+- Sandbox as platform-independent interface with per-platform backends (macOS Seatbelt, Linux Landlock+seccomp, Windows NOP+ConPTY)
+- Three-tier command classification: safe (auto-allow), workspace (approve once, then session-allow), dangerous (always deny)
+- Pattern-based Effect Analyzer: deterministic rules, dangerous rules cannot be overridden by the model
+- All commands execute via PTY master/slave (Unix: posix_openpt, Windows: ConPTY, pipe fallback on unsupported versions)
+- Execution identity: SHA256(command + args + cwd + env + sandbox level) — analogous to patch content identity
+- Session-scoped approval memory (in-memory only, not persisted across sessions)
 
 ### Slice 3: Benchmark Suite (planned, not designed)
 
