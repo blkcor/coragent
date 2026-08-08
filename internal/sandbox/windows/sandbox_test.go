@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/blkcor/coragent/internal/sandbox"
+	"golang.org/x/sys/windows"
 )
 
 func TestStartCmdEcho(t *testing.T) {
@@ -107,8 +108,8 @@ func TestContextCancelKillsJobObject(t *testing.T) {
 	s := New(nil)
 
 	proc, err := s.Start(ctx, sandbox.CommandSpec{
-		Command:        "cmd",
-		Args:           []string{"/c", "timeout 60"},
+		Command:        "powershell",
+		Args:           []string{"-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"},
 		Env:            os.Environ(),
 		Timeout:        30 * time.Second,
 		MaxOutputBytes: 64 * 1024,
@@ -125,6 +126,14 @@ func TestContextCancelKillsJobObject(t *testing.T) {
 
 	if !result.Signaled {
 		t.Errorf("process should be signaled on context cancel, got exit=%d err=%v", result.ExitCode, result.Error)
+	}
+}
+
+func TestWindowsEscapeArg(t *testing.T) {
+	for _, value := range []string{"", "plain", "two words", `embedded"quote`, `C:\\path with space\\`} {
+		if got, want := windowsEscapeArg(value), windows.EscapeArg(value); got != want {
+			t.Errorf("windowsEscapeArg(%q) = %q, want %q", value, got, want)
+		}
 	}
 }
 

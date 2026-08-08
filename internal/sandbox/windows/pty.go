@@ -4,9 +4,11 @@ package windows
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -18,11 +20,18 @@ var _ sandbox.PTYManager = (*ptyManager)(nil)
 
 type ptyManager struct {
 	useConPTY bool
-	hpc       syscall.Handle
+	mu        sync.Mutex
+	states    map[uintptr]*conPTYState
+}
+
+type conPTYState struct {
+	hpc         syscall.Handle
+	inputRead   *os.File
+	outputWrite *os.File
 }
 
 func NewPTYManager() sandbox.PTYManager {
-	return &ptyManager{useConPTY: supportsConPTY()}
+	return &ptyManager{useConPTY: supportsConPTY(), states: make(map[uintptr]*conPTYState)}
 }
 
 func (m *ptyManager) Allocate() (*os.File, *os.File, error) {
@@ -74,12 +83,16 @@ func (m *ptyManager) allocateConPTY() (*os.File, *os.File, error) {
 		_ = conoutW.Close()
 		return nil, nil, fmt.Errorf("windows pty: CreatePseudoConsole: %w", err)
 	}
-	m.hpc = hpc
-
-	// coninR and conoutW handles are now owned by the ConPTY. Close the Go
-	// *os.File wrappers without closing the underlying handles.
-	_ = coninR.Close()
-	_ = conoutW.Close()
+	m.mu.Lock()
+	if m.states == nil {
+		m.states = make(map[uintptr]*conPTYState)
+	}
+	m.states[conoutR.Fd()] = &conPTYState{
+		hpc:         hpc,
+		inputRead:   coninR,
+		outputWrite: conoutW,
+	}
+	m.mu.Unlock()
 
 	return conoutR, coninW, nil
 }
@@ -88,7 +101,11 @@ func (m *ptyManager) Resize(master *os.File, rows, cols int) error {
 	if !m.useConPTY {
 		return nil
 	}
-	return resizePseudoConsole(m.hpc, conptyCoord{X: int16(cols), Y: int16(rows)})
+	state, err := m.stateFor(master)
+	if err != nil {
+		return err
+	}
+	return resizePseudoConsole(state.hpc, conptyCoord{X: int16(cols), Y: int16(rows)})
 }
 
 func (m *ptyManager) ReadLoop(ctx context.Context, master *os.File, buf io.Writer, maxBytes int64) error {
@@ -152,28 +169,77 @@ func readFileChunk(handle syscall.Handle, buf []byte) (uint32, error) {
 // buildProcThreadAttribute creates a ProcThreadAttributeList containing the
 // ConPTY HPCON for use with STARTUPINFOEX in CreateProcess. Returns nil on
 // the pipe fallback path.
-func (m *ptyManager) buildProcThreadAttribute() (*windows.ProcThreadAttributeListContainer, error) {
+func (m *ptyManager) buildProcThreadAttribute(master *os.File) (*windows.ProcThreadAttributeListContainer, error) {
 	if !m.useConPTY {
 		return nil, nil
+	}
+	state, err := m.stateFor(master)
+	if err != nil {
+		return nil, err
 	}
 	attr, err := windows.NewProcThreadAttributeList(1)
 	if err != nil {
 		return nil, fmt.Errorf("windows pty: NewProcThreadAttributeList: %w", err)
 	}
-	hpc := m.hpc
-	//nolint:gosec // unsafe.Pointer required for Windows ProcThreadAttributeList API
-	if err := attr.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, unsafe.Pointer(&hpc), unsafe.Sizeof(hpc)); err != nil {
+	hpc := state.hpc
+	if err := attr.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, pseudoConsoleAttributeValue(hpc), unsafe.Sizeof(hpc)); err != nil {
 		attr.Delete()
 		return nil, fmt.Errorf("windows pty: Update(PSEUDOCONSOLE): %w", err)
 	}
 	return attr, nil
 }
 
-func (m *ptyManager) closeHPCON() {
-	if m.hpc != 0 {
-		closePseudoConsole(m.hpc)
-		m.hpc = 0
+//go:nocheckptr
+func pseudoConsoleAttributeValue(hpc syscall.Handle) unsafe.Pointer {
+	// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE takes the HPCON value itself as
+	// lpValue, unlike attributes whose value is stored behind a pointer.
+	return unsafe.Pointer(hpc)
+}
+
+func (m *ptyManager) releasePseudoConsolePipes(master *os.File) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.states[master.Fd()]
+	if state == nil {
+		return
 	}
+	if state.inputRead != nil {
+		_ = state.inputRead.Close()
+		state.inputRead = nil
+	}
+	if state.outputWrite != nil {
+		_ = state.outputWrite.Close()
+		state.outputWrite = nil
+	}
+}
+
+func (m *ptyManager) closeHPCON(master *os.File) {
+	m.mu.Lock()
+	state := m.states[master.Fd()]
+	delete(m.states, master.Fd())
+	m.mu.Unlock()
+	if state == nil {
+		return
+	}
+	if state.inputRead != nil {
+		_ = state.inputRead.Close()
+	}
+	if state.outputWrite != nil {
+		_ = state.outputWrite.Close()
+	}
+	if state.hpc != 0 {
+		closePseudoConsole(state.hpc)
+	}
+}
+
+func (m *ptyManager) stateFor(master *os.File) (*conPTYState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.states[master.Fd()]
+	if state == nil {
+		return nil, errors.New("windows pty: unknown ConPTY allocation")
+	}
+	return state, nil
 }
 
 // ---- ConPTY syscalls (not in golang.org/x/sys/windows) ----

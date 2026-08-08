@@ -160,23 +160,27 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 		return nil, fmt.Errorf("windows sandbox: pty allocate: %w", err)
 	}
 	defer func() { _ = slave.Close() }()
+	cleanupPTY := true
+	defer func() {
+		if cleanupPTY {
+			s.pty.closeHPCON(master)
+			_ = master.Close()
+		}
+	}()
 
-	attr, err := s.pty.buildProcThreadAttribute()
+	attr, err := s.pty.buildProcThreadAttribute(master)
 	if err != nil {
-		_ = master.Close()
 		return nil, fmt.Errorf("windows sandbox: proc thread attribute: %w", err)
 	}
 	defer attr.Delete()
 
 	jobObject, err := createKillOnCloseJob()
 	if err != nil {
-		_ = master.Close()
 		return nil, err
 	}
 
 	cmdLine, err := windows.UTF16PtrFromString(buildCommandLine(spec.Command, spec.Args))
 	if err != nil {
-		_ = master.Close()
 		_ = windows.CloseHandle(jobObject)
 		return nil, fmt.Errorf("windows sandbox: command line: %w", err)
 	}
@@ -187,7 +191,6 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 	if spec.CWD != "" {
 		cwdPtr, err = windows.UTF16PtrFromString(spec.CWD)
 		if err != nil {
-			_ = master.Close()
 			_ = windows.CloseHandle(jobObject)
 			return nil, fmt.Errorf("windows sandbox: cwd: %w", err)
 		}
@@ -195,11 +198,7 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 
 	startupInfo := windows.StartupInfoEx{
 		StartupInfo: windows.StartupInfo{
-			Cb:        uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
-			Flags:     windows.STARTF_USESTDHANDLES,
-			StdInput:  windows.Handle(slave.Fd()),
-			StdOutput: windows.Handle(slave.Fd()),
-			StdErr:    windows.Handle(slave.Fd()),
+			Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
 		},
 		ProcThreadAttributeList: attr.List(),
 	}
@@ -211,14 +210,14 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 		nil,
 		nil,
 		false,
-		windows.CREATE_NEW_PROCESS_GROUP|windows.EXTENDED_STARTUPINFO_PRESENT,
+		windows.CREATE_NEW_PROCESS_GROUP|windows.CREATE_UNICODE_ENVIRONMENT|windows.EXTENDED_STARTUPINFO_PRESENT,
 		envBlock,
 		cwdPtr,
 		&startupInfo.StartupInfo,
 		&procInfo,
 	)
+	s.pty.releasePseudoConsolePipes(master)
 	if err != nil {
-		_ = master.Close()
 		_ = windows.CloseHandle(jobObject)
 		return nil, fmt.Errorf("windows sandbox: CreateProcess %s: %w", spec.Command, err)
 	}
@@ -229,7 +228,6 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 		_ = windows.TerminateJobObject(jobObject, 1)
 		_ = windows.CloseHandle(jobObject)
 		_ = windows.CloseHandle(procInfo.Process)
-		_ = master.Close()
 		return nil, fmt.Errorf("windows sandbox: AssignProcessToJobObject: %w", err)
 	}
 
@@ -246,6 +244,7 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 
 	go p.readPTY(ctx)
 	go p.watchTimeout(ctx)
+	cleanupPTY = false
 
 	return p, nil
 }
@@ -350,11 +349,11 @@ func (p *process) readPipes(stdoutPipe, stderrPipe io.ReadCloser) {
 func (p *process) readPTY(ctx context.Context) {
 	defer close(p.doneCh)
 	defer func() {
+		if p.ptyMgr != nil {
+			p.ptyMgr.closeHPCON(p.ptyMaster)
+		}
 		_ = p.ptyMaster.Close()
 		_ = windows.CloseHandle(p.jobObject)
-		if p.ptyMgr != nil {
-			p.ptyMgr.closeHPCON()
-		}
 	}()
 
 	var output bytes.Buffer
@@ -465,8 +464,8 @@ func osProcessFromHandle(handle windows.Handle, pid int) *os.Process {
 	return proc
 }
 
-// buildCommandLine joins a command and args into a Windows command line string.
-// The executable is quoted if it contains spaces; args are appended as-is.
+// buildCommandLine joins a command and args into a Windows command line string
+// using the escaping rules consumed by CommandLineToArgvW-compatible parsers.
 func buildCommandLine(command string, args []string) string {
 	if len(args) == 0 {
 		return windowsEscapeArg(command)
@@ -481,47 +480,15 @@ func buildCommandLine(command string, args []string) string {
 }
 
 func windowsEscapeArg(s string) string {
-	if s == "" {
-		return `""`
-	}
-	hasSpace := false
-	hasQuote := false
-	for _, c := range s {
-		switch c {
-		case ' ':
-			hasSpace = true
-		case '"':
-			hasQuote = true
-		}
-	}
-	if !hasSpace && !hasQuote {
-		return s
-	}
-	escaped := make([]byte, 0, len(s)+2)
-	escaped = append(escaped, '"')
-	for i := 0; i < len(s); i++ {
-		// Count consecutive backslashes.
-		n := 0
-		for i+n < len(s) && s[i+n] == '\\' {
-			n++
-		}
-		if i+n >= len(s) || s[i+n] != '"' {
-			escaped = append(escaped, s[i:i+n]...)
-			i += n - 1
-		} else {
-			escaped = append(escaped, s[i:i+2*n]...)
-			i += n
-		}
-	}
-	escaped = append(escaped, '"')
-	return string(escaped)
+	return windows.EscapeArg(s)
 }
 
 // buildEnvBlock converts a []string of "KEY=VALUE" pairs into the
 // null-separated, double-null-terminated block that CreateProcess expects.
 func buildEnvBlock(env []string) *uint16 {
 	if len(env) == 0 {
-		return nil
+		block := []uint16{0, 0}
+		return &block[0]
 	}
 	var block []uint16
 	for _, e := range env {
