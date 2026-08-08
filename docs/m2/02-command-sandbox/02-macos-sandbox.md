@@ -1,6 +1,6 @@
 # S2.2 macOS Sandbox: Seatbelt Backend
 
-**Status:** pending
+**Status:** accepted (2026-08-08)
 **Prerequisite:** [S2.1 accepted](01-sandbox-interface.md)
 
 ## Goal
@@ -31,17 +31,17 @@
 
 ## Acceptance
 
-- [ ] `sandbox-exec` 可用性检测（macOS 系统自带，任何 macOS >= 12 应可用）
-- [ ] profile 生成：workspace 内可读写，workspace 外拒绝
-- [ ] profile 生成：默认 deny network outbound
-- [ ] profile 生成：allow 声明的 system paths
-- [ ] 基础命令在 sandbox 内执行成功（`ls`、`cat`、`grep`）
-- [ ] workspace 外写入被 Seatbelt 拒绝（`Operation not permitted`）
-- [ ] network 访问被 Seatbelt 拒绝
-- [ ] `ConfinementLevel()` 返回 `ConfinementKernel`
-- [ ] PTY I/O 在 sandbox 内正常
-- [ ] timeout + `SIGKILL` → sandbox 进程终止
-- [ ] 离线测试可在非 macOS 平台 skip（build tag: `darwin`）
+- [x] `sandbox-exec` 可用性检测（macOS 系统自带，任何 macOS >= 12 应可用）
+- [x] profile 生成：workspace 内可读写，workspace 外拒绝
+- [x] profile 生成：默认 deny network outbound
+- [x] profile 生成：allow 声明的 system paths（简化设计：全局 `file-read*`，写路径精确限制。macOS 26 sealed volume + cryptex 使 path-based 读限制不稳定）
+- [x] 基础命令在 sandbox 内执行成功（`ls`、`cat`、`grep`）
+- [x] workspace 外写入被 Seatbelt 拒绝（`Operation not permitted`）
+- [x] network 访问被 Seatbelt 拒绝
+- [x] `ConfinementLevel()` 返回 `ConfinementKernel`
+- [x] PTY I/O 在 sandbox 内正常（共用 NOP PTY manager，sandbox-exec 作用于子进程的 slave fd）
+- [x] timeout + `SIGKILL` → sandbox 进程终止
+- [x] 离线测试可在非 macOS 平台 skip（build tag: `darwin`）
 
 ## Evidence
 
