@@ -1,6 +1,6 @@
 # S1.7 CLI Approval Interaction
 
-**Status:** pending acceptance
+**Status:** accepted
 **Prerequisite:** [S1.6 accepted](06-approval-loop-crash-recovery.md)
 
 ## Goal
@@ -21,13 +21,13 @@
 
 ## Acceptance
 
-- [ ] `approval_required` 事件到达时，CLI 渲染 diff 预览 + 选项行并等待用户输入
-- [ ] 输入 `a` → Engine 收到 approve 命令，继续执行
-- [ ] 输入 `d` → Engine 收到 deny 命令，返回 tool_result(denied)
-- [ ] 输入无效字符 → 重新显示选项行，不发送命令
-- [ ] `is_sensitive = true` → diff 被替换为 blocked 消息，但仍显示选项行
-- [ ] CLI 在审批等待期间仍可接收 cancel（Ctrl+C）并终止 run
-- [ ] 手工测试：启动 coragent，触发 patch 调用，审查 diff，按 `a` 批准，验证文件已修改
+- [x] `approval_required` 事件到达时，CLI 渲染 diff 预览 + 选项行并等待用户输入
+- [x] 输入 `a` → Engine 收到 approve 命令，继续执行
+- [x] 输入 `d` → Engine 收到 deny 命令，返回 tool_result(denied)
+- [x] 输入无效字符 → 重新显示选项行，不发送命令
+- [x] `is_sensitive = true` → diff 被替换为 blocked 消息，但仍显示选项行
+- [x] CLI 在审批等待期间仍可接收 cancel（Ctrl+C）并终止 run
+- [x] 手工测试：启动 coragent，触发 patch 调用，审查 diff，按 `a` 批准，验证文件已修改
 
 ## Evidence
 

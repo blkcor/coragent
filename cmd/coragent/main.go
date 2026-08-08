@@ -214,7 +214,7 @@ func newRuntime(workspacePath string) (*engine.Engine, error) {
 
 func interact(s *engine.Session, onePrompt string, resumed bool, in io.Reader, out, errOut io.Writer, interrupt <-chan os.Signal) int {
 	if onePrompt != "" {
-		if err := runTurn(s, onePrompt, out, interrupt); err != nil {
+		if err := runTurn(s, onePrompt, in, out, interrupt); err != nil {
 			writeLine(errOut, err)
 			return 1
 		}
@@ -234,13 +234,13 @@ func interact(s *engine.Session, onePrompt string, resumed bool, in io.Reader, o
 		if line == "" {
 			continue
 		}
-		if err := runTurn(s, line, out, interrupt); err != nil {
+		if err := runTurn(s, line, in, out, interrupt); err != nil {
 			writeLine(errOut, err)
 		}
 	}
 }
 
-func runTurn(s *engine.Session, text string, out io.Writer, interrupt <-chan os.Signal) error {
+func runTurn(s *engine.Session, text string, in io.Reader, out io.Writer, interrupt <-chan os.Signal) error {
 	observation, unsubscribe := s.Observe(s.HighWaterMark())
 	defer unsubscribe()
 	cmd, err := sessioncommand.NewSubmit(newCommandID(), text)
@@ -259,6 +259,38 @@ func runTurn(s *engine.Session, text string, out io.Writer, interrupt <-chan os.
 		case ev, ok := <-observation.Events:
 			if !ok {
 				return errors.New("coragent: event observation closed before run termination")
+			}
+			if ev.Kind == event.KindApprovalRequired {
+				var approval event.ApprovalRequiredPayload
+				if ev.DecodePayload(&approval) == nil {
+					renderApprovalPrompt(out, approval)
+					for {
+						writeText(out, "\n[a] Approve  [d] Deny\n[a/d] > ")
+						cmd, err := readApprovalInput(in, interrupt)
+						if err != nil {
+							cancel, _ := sessioncommand.NewCancel(newCommandID())
+							_ = s.Apply(context.Background(), cancel.ForSession(s.ID()))
+							return err
+						}
+						switch strings.ToLower(cmd) {
+						case "a":
+							c, cerr := sessioncommand.NewApprove(newCommandID(), approval.RequestID)
+							if cerr == nil {
+								_ = s.Apply(context.Background(), c.ForSession(s.ID()))
+							}
+						case "d":
+							c, cerr := sessioncommand.NewDeny(newCommandID(), approval.RequestID)
+							if cerr == nil {
+								_ = s.Apply(context.Background(), c.ForSession(s.ID()))
+							}
+						default:
+							writeLine(out, "Press 'a' to approve or 'd' to deny")
+							continue
+						}
+						break
+					}
+				}
+				continue
 			}
 			render.event(ev)
 			if ev.Kind == event.KindRunCompleted {
@@ -320,6 +352,62 @@ func (r *eventRenderer) event(ev event.Event) {
 		var payload event.RunFailedPayload
 		_ = ev.DecodePayload(&payload)
 		writeFormatted(r.out, "\n[failed: %s]\n", terminalSafe(string(payload.Cause)))
+	}
+}
+
+func renderApprovalPrompt(out io.Writer, approval event.ApprovalRequiredPayload) {
+	writeFormatted(out, "\n--- Approval Required ---\n")
+	writeFormatted(out, "Path: %s\n", approval.Path)
+	if approval.IsSensitive {
+		writeLine(out, "[BLOCKED: credential detected in patch]")
+	} else {
+		renderDiff(out, approval.Diff)
+	}
+}
+
+func renderDiff(out io.Writer, diff string) {
+	const (
+		red    = "\033[31m"
+		green  = "\033[32m"
+		cyan   = "\033[36m"
+		bold   = "\033[1m"
+		reset  = "\033[0m"
+	)
+	for _, line := range strings.Split(diff, "\n") {
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++"):
+			writeFormatted(out, "%s%s%s\n", bold, terminalSafe(line), reset)
+		case strings.HasPrefix(line, "@@"):
+			writeFormatted(out, "%s%s%s\n", cyan, terminalSafe(line), reset)
+		case strings.HasPrefix(line, "-"):
+			writeFormatted(out, "%s%s%s\n", red, terminalSafe(line), reset)
+		case strings.HasPrefix(line, "+"):
+			writeFormatted(out, "%s%s%s\n", green, terminalSafe(line), reset)
+		default:
+			writeLine(out, terminalSafe(line))
+		}
+	}
+}
+
+func readApprovalInput(in io.Reader, interrupt <-chan os.Signal) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		reader := bufio.NewReader(in)
+		text, err := reader.ReadString('\n')
+		ch <- result{strings.TrimSpace(text), err}
+	}()
+	select {
+	case <-interrupt:
+		return "", errors.New("interrupted")
+	case r := <-ch:
+		return r.text, r.err
 	}
 }
 
