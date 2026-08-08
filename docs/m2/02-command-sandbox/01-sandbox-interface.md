@@ -1,6 +1,6 @@
 # S2.1 Sandbox Runtime Interface + NOP Implementation
 
-**Status:** pending
+**Status:** accepted (2026-08-08)
 **Prerequisite:** M2 S1 merged
 
 ## Goal
@@ -38,15 +38,15 @@
 
 ## Acceptance
 
-- [ ] `Sandbox`、`Process`、`PTYManager` 接口定义清晰，每个方法有明确的语义和错误约定
-- [ ] `CommandSpec` 覆盖所有 command 执行所需参数（command、args、cwd、env、timeout、max output、pty flag、grants）
-- [ ] `ConfinementLevel` 三种取值语义明确，NOP 返回 `ConfinementProcess`
-- [ ] NOP sandbox 可启动简单命令（`echo hello`）并捕获输出
-- [ ] NOP sandbox timeout 后终止进程组（包括子进程）
-- [ ] NOP sandbox PTY I/O 正常工作（Unix 平台）
-- [ ] context 取消 → 进程组收到 `SIGKILL`
-- [ ] `Grants` 结构支持声明允许的文件路径（为后续 platform sandbox 使用）
-- [ ] 离线测试覆盖上述所有场景
+- [x] `Sandbox`、`Process`、`PTYManager` 接口定义清晰，每个方法有明确的语义和错误约定
+- [x] `CommandSpec` 覆盖所有 command 执行所需参数（command、args、cwd、env、timeout、max output、pty flag、grants）
+- [x] `ConfinementLevel` 三种取值语义明确，NOP 返回 `ConfinementProcess`
+- [x] NOP sandbox 可启动简单命令（`echo hello`）并捕获输出
+- [x] NOP sandbox timeout 后终止进程组（包括子进程）
+- [x] NOP sandbox PTY I/O 正常工作（Unix 平台）
+- [x] context 取消 → 进程组收到 `SIGKILL`
+- [x] `Grants` 结构支持声明允许的文件路径（为后续 platform sandbox 使用）
+- [x] 离线测试覆盖上述所有场景
 
 ## Evidence
 
