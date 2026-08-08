@@ -1,6 +1,6 @@
 # S2.3 Linux Sandbox: Landlock + seccomp Backend
 
-**Status:** pending
+**Status:** accepted (2026-08-08)
 **Prerequisite:** [S2.1 accepted](01-sandbox-interface.md)
 
 ## Goal
@@ -28,22 +28,23 @@
   - Process group 管理
   - PTY I/O
 - 可用性检测：
-  - Landlock: kernel >= 5.13，检查 `/proc/sys/kernel/landlock/abi` 是否存在
+  - Landlock: kernel >= 5.13，以非零 `handled_access_fs` 试建 ruleset 探活
+    （mainline 无 `/proc/sys/kernel/landlock/abi`；VERSION 查询用 flags=1）
   - seccomp: kernel >= 3.17，几乎总是可用
   - 不可用时 fallback 到 NOP + warning event
 
 ## Acceptance
 
-- [ ] Landlock ruleset 构建正确：workspace 内读写放行，workspace 外拒绝
-- [ ] seccomp filter 构建正确：基本 syscall 放行，危险 syscall 拒绝
-- [ ] 基础命令在 sandbox 内执行成功
-- [ ] workspace 外写入被拒绝
-- [ ] network 访问默认被拒绝（socket syscall 被 seccomp 拦截）
-- [ ] `ConfinementLevel()` 返回 `ConfinementKernel`
-- [ ] kernel 不支持时 fallback 到 `ConfinementProcess`（NOP），并记录 warning
-- [ ] PTY I/O 在 sandbox 内正常（Linux `/dev/ptmx`）
-- [ ] timeout + `SIGKILL` — sandbox 进程正确终止
-- [ ] 离线测试在非 Linux 平台 skip（build tag: `linux`）
+- [x] Landlock ruleset 构建正确：workspace 内读写放行，workspace 外拒绝（实测：workspace 外写 `/root` 被拒）
+- [x] seccomp filter 构建正确：基本 syscall 放行，危险 syscall 拒绝（新增 classic-BPF 语义回归测试，amd64/arm64 双架构交叉编译）
+- [x] 基础命令在 sandbox 内执行成功（echo/cat/sh，真实内核 6.12.76-linuxkit, Landlock ABI v6）
+- [x] workspace 外写入被拒绝
+- [x] network 访问默认被拒绝（socket syscall 被 seccomp 拦截；grant 声明 network 时放行）
+- [x] `ConfinementLevel()` 返回 `ConfinementKernel`
+- [x] kernel 不支持时检测并 fail-closed（`Start` 返回 typed error；fallback 到 NOP + warning 由 S2.7 command tool 负责选 backend，与 macOS 后端同一契约）
+- [x] PTY I/O 在 sandbox 内正常（TestPTYBasic，Linux /dev/ptmx）
+- [x] timeout + `SIGKILL` — sandbox 进程正确终止
+- [x] 离线测试在非 Linux 平台 skip（build tag: `linux`）
 
 ## Evidence
 

@@ -1,4 +1,4 @@
-# S2.4 Effect Analyzer: Pattern-based Command Classification
+# S2.5 Effect Analyzer: Pattern-based Command Classification
 
 **Status:** pending
 **Prerequisite:** [S2.1 accepted](01-sandbox-interface.md) (type definitions available)

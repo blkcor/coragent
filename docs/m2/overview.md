@@ -86,14 +86,14 @@ Design documents in `02-command-sandbox/`.
 1. [Sandbox Runtime Interface + NOP](02-command-sandbox/01-sandbox-interface.md)
 2. [macOS Sandbox: Seatbelt](02-command-sandbox/02-macos-sandbox.md)
 3. [Linux Sandbox: Landlock + seccomp](02-command-sandbox/03-linux-sandbox.md)
-4. [Windows Sandbox: NOP + ConPTY](02-command-sandbox/03-windows-sandbox.md)
-5. [Effect Analyzer: Pattern-based Classification](02-command-sandbox/04-effect-analyzer.md)
-6. [Policy Engine + Session Memory](02-command-sandbox/05-policy-engine.md)
-7. [Command Tool: Prepare + Execution Identity](02-command-sandbox/06-command-tool-prepare.md)
-8. [Command Execution + Output Pipeline](02-command-sandbox/07-command-execution-output.md)
-9. [CLI Command Approval](02-command-sandbox/08-cli-command-approval.md)
-10. [Run Budget: Active Process Time](02-command-sandbox/09-run-budget-process-time.md)
-11. [S2 Integration Acceptance](02-command-sandbox/10-s2-integration.md)
+4. [Windows Sandbox: NOP + ConPTY](02-command-sandbox/04-windows-sandbox.md)
+5. [Effect Analyzer: Pattern-based Classification](02-command-sandbox/05-effect-analyzer.md)
+6. [Policy Engine + Session Memory](02-command-sandbox/06-policy-engine.md)
+7. [Command Tool: Prepare + Execution Identity](02-command-sandbox/07-command-tool-prepare.md)
+8. [Command Execution + Output Pipeline](02-command-sandbox/08-command-execution-output.md)
+9. [CLI Command Approval](02-command-sandbox/09-cli-command-approval.md)
+10. [Run Budget: Active Process Time](02-command-sandbox/10-run-budget-process-time.md)
+11. [S2 Integration Acceptance](02-command-sandbox/11-s2-integration.md)
 
 Architecture:
 

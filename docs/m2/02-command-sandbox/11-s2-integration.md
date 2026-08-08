@@ -1,7 +1,7 @@
-# S2.10 S2 Integration Acceptance
+# S2.11 S2 Integration Acceptance
 
 **Status:** pending
-**Prerequisite:** [S2.1] through [S2.9] accepted
+**Prerequisite:** [S2.1] through [S2.10] accepted
 
 ## Goal
 

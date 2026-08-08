@@ -20,6 +20,7 @@ import (
 	"github.com/blkcor/coragent/internal/engine"
 	"github.com/blkcor/coragent/internal/event"
 	provideropenai "github.com/blkcor/coragent/internal/provider/openai"
+	"github.com/blkcor/coragent/internal/sandbox/linux"
 	"github.com/blkcor/coragent/internal/sessioncommand"
 	"github.com/blkcor/coragent/internal/settings"
 	"github.com/blkcor/coragent/internal/transcript"
@@ -28,6 +29,12 @@ import (
 var version = "m1-dev"
 
 func main() {
+	// Re-exec guard for Linux sandbox — the child process detects the init
+	// marker, applies Landlock+seccomp, and execs the real target command.
+	if linux.HandleInit(os.Args[1:]) {
+		panic("unreachable")
+	}
+
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(interrupt)

@@ -1,7 +1,7 @@
-# S2.5 Policy Engine: allow/approve/deny + Session Memory
+# S2.6 Policy Engine: allow/approve/deny + Session Memory
 
 **Status:** pending
-**Prerequisite:** [S2.4 accepted](04-effect-analyzer.md)
+**Prerequisite:** [S2.5 accepted](05-effect-analyzer.md)
 
 ## Goal
 

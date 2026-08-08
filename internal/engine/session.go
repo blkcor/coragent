@@ -808,7 +808,7 @@ func (s *Session) approvalFlow(ctx context.Context, runID string, call provider.
 	case <-ctx.Done():
 		s.mu.Lock()
 		delete(s.approvalCh, reqID)
-		s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+		_ = s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
 			RequestID: reqID, Reason: transcript.AbortCancelled,
 		})
 		s.mu.Unlock()
@@ -818,7 +818,7 @@ func (s *Session) approvalFlow(ctx context.Context, runID string, call provider.
 	s.mu.Lock()
 	delete(s.approvalCh, reqID)
 	if cmd.Kind == sessioncommand.KindDeny {
-		s.appendPayloadLocked(runID, transcript.KindActionDenied, transcript.ActionDeniedPayload{
+		_ = s.appendPayloadLocked(runID, transcript.KindActionDenied, transcript.ActionDeniedPayload{
 			RequestID: reqID, CommandID: cmd.ID,
 		})
 		s.mu.Unlock()
@@ -846,11 +846,11 @@ func (s *Session) approvalFlow(ctx context.Context, runID string, call provider.
 
 	s.mu.Lock()
 	if result.Outcome == transcript.ToolResultSuccess {
-		s.appendPayloadLocked(runID, transcript.KindActionCommitted, transcript.ActionCommittedPayload{
+		_ = s.appendPayloadLocked(runID, transcript.KindActionCommitted, transcript.ActionCommittedPayload{
 			RequestID: reqID, ActualSHA256: prepared.Patch.ExpectedSHA256,
 		})
 	} else {
-		s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
+		_ = s.appendPayloadLocked(runID, transcript.KindActionAborted, transcript.ActionAbortedPayload{
 			RequestID: reqID, Reason: transcript.AbortStale,
 		})
 	}

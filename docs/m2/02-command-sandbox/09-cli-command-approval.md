@@ -1,7 +1,7 @@
-# S2.8 CLI Command Approval Interaction
+# S2.9 CLI Command Approval Interaction
 
 **Status:** pending
-**Prerequisite:** [S2.7 accepted](07-command-execution-output.md)
+**Prerequisite:** [S2.8 accepted](08-command-execution-output.md)
 
 ## Goal
 

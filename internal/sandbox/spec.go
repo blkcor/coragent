@@ -2,12 +2,16 @@ package sandbox
 
 import "time"
 
-// Grants declares the filesystem paths a command is allowed to access. NOP
-// sandbox does not enforce grants; platform sandboxes (macOS/Linux) use them
-// to construct kernel-level restrictions.
+// Grants declares the filesystem paths and network access a command is allowed.
+// NOP sandbox does not enforce grants; platform sandboxes (macOS/Linux) use
+// them to construct kernel-level restrictions.
 type Grants struct {
 	AllowedReadPaths  []string
 	AllowedWritePaths []string
+	// Network enables outbound network access. Default (false) blocks all
+	// socket syscalls in kernel-level sandboxes (seccomp on Linux, Seatbelt
+	// on macOS). Set to true when the command legitimately needs network.
+	Network bool
 }
 
 // CommandSpec carries all parameters needed to execute a command in a sandbox.

@@ -1,7 +1,7 @@
-# S2.9 Run Budget: Active Process Time
+# S2.10 Run Budget: Active Process Time
 
 **Status:** pending
-**Prerequisite:** [S2.7 accepted](07-command-execution-output.md)
+**Prerequisite:** [S2.8 accepted](08-command-execution-output.md)
 
 ## Goal
 

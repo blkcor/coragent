@@ -29,7 +29,7 @@ func newSessionWithWorkspace(t *testing.T, p provider.Provider, dir string) *eng
 	if err != nil {
 		t.Fatalf("workspace.Open: %v", err)
 	}
-	t.Cleanup(func() { w.Close() })
+	t.Cleanup(func() { _ = w.Close() })
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, err := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)
@@ -136,7 +136,7 @@ func TestApprovalNormalApprovePath(t *testing.T) {
 			hasCommitted = true
 		case transcript.KindToolResult:
 			var p transcript.ToolResultPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.Outcome == transcript.ToolResultSuccess && p.CallID == "call-1" {
 				hasToolResult = true
 			}
@@ -178,7 +178,7 @@ func TestApprovalDenyPath(t *testing.T) {
 		}
 	}
 	var approvalPayload event.ApprovalRequiredPayload
-	approvalEvent.DecodePayload(&approvalPayload)
+	_ = approvalEvent.DecodePayload(&approvalPayload)
 
 	// Send deny command
 	deny, _ := sessioncommand.NewDeny("cmd-2", approvalPayload.RequestID)
@@ -258,7 +258,7 @@ func TestApprovalCancelDuringWait(t *testing.T) {
 	for _, rec := range records {
 		if rec.Kind == transcript.KindActionAborted {
 			var p transcript.ActionAbortedPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.Reason == transcript.AbortCancelled {
 				hasAborted = true
 			}
@@ -277,7 +277,7 @@ func TestCrashRecoveryCommittedWithoutToolResult(t *testing.T) {
 	sourceSHA := sha256Str("line1\nline2\nline3\n")
 	expectedSHA := sha256Str("line1\nnew line2\nline3\n")
 	// Write the file to expected state (simulating post-crash where write happened)
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nnew line2\nline3\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nnew line2\nline3\n"), 0o600)
 
 	root := t.TempDir()
 	durable, err := store.Create(root, "sess-crash", dir, dataproj.ProjectionVersion, testStoreBinding(), time.Now())
@@ -320,7 +320,7 @@ func TestCrashRecoveryCommittedWithoutToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, _ := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)
@@ -339,7 +339,7 @@ func TestCrashRecoveryCommittedWithoutToolResult(t *testing.T) {
 	for _, rec := range records {
 		if rec.Kind == transcript.KindToolResult {
 			var p transcript.ToolResultPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.CallID == "call-1" && p.Outcome == transcript.ToolResultSuccess &&
 				strings.Contains(p.Content, "already committed") {
 				hasRecoveredResult = true
@@ -359,7 +359,7 @@ func TestCrashRecoveryCommittingDiskMatchesExpected(t *testing.T) {
 	sourceSHA := sha256Str("line1\nline2\nline3\n")
 	expectedSHA := sha256Str("line1\nnew line2\nline3\n")
 	// Write the file to expected state (write already happened)
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nnew line2\nline3\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "f.txt"), []byte("line1\nnew line2\nline3\n"), 0o600)
 
 	root := t.TempDir()
 	durable, err := store.Create(root, "sess-crash", dir, dataproj.ProjectionVersion, testStoreBinding(), time.Now())
@@ -394,7 +394,7 @@ func TestCrashRecoveryCommittingDiskMatchesExpected(t *testing.T) {
 	}
 
 	w, _ := workspace.Open(dir)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, _ := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)
@@ -416,7 +416,7 @@ func TestCrashRecoveryCommittingDiskMatchesExpected(t *testing.T) {
 		}
 		if rec.Kind == transcript.KindToolResult {
 			var p transcript.ToolResultPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.CallID == "call-1" && p.Outcome == transcript.ToolResultSuccess {
 				hasRecoveredResult = true
 			}
@@ -472,7 +472,7 @@ func TestCrashRecoveryCommittingDiskMatchesSource(t *testing.T) {
 	}
 
 	w, _ := workspace.Open(dir)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, _ := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)
@@ -500,7 +500,7 @@ func TestCrashRecoveryCommittingDiskMatchesSource(t *testing.T) {
 		}
 		if rec.Kind == transcript.KindToolResult {
 			var p transcript.ToolResultPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.CallID == "call-1" && p.Outcome == transcript.ToolResultSuccess &&
 				strings.Contains(p.Content, "auto-retry") {
 				hasRecoveredResult = true
@@ -557,7 +557,7 @@ func TestCrashRecoveryCommittingDiskMismatch(t *testing.T) {
 	}
 
 	w, _ := workspace.Open(dir)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, _ := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)
@@ -582,14 +582,14 @@ func TestCrashRecoveryCommittingDiskMismatch(t *testing.T) {
 	for _, rec := range records {
 		if rec.Kind == transcript.KindActionAborted {
 			var p transcript.ActionAbortedPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.Reason == transcript.AbortStale {
 				hasAborted = true
 			}
 		}
 		if rec.Kind == transcript.KindToolResult {
 			var p transcript.ToolResultPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.CallID == "call-1" && p.Outcome == transcript.ToolResultError &&
 				strings.Contains(p.Content, "externally") {
 				hasStaleResult = true
@@ -636,7 +636,7 @@ func TestCrashRecoveryPreparedWithoutApproved(t *testing.T) {
 
 	reopened, _ := store.Open(root, "sess-crash")
 	w, _ := workspace.Open(dir)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, _ := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)
@@ -661,14 +661,14 @@ func TestCrashRecoveryPreparedWithoutApproved(t *testing.T) {
 	for _, rec := range records {
 		if rec.Kind == transcript.KindActionAborted {
 			var p transcript.ActionAbortedPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.Reason == transcript.AbortCancelled {
 				hasAborted = true
 			}
 		}
 		if rec.Kind == transcript.KindToolResult {
 			var p transcript.ToolResultPayload
-			rec.DecodePayload(&p)
+			_ = rec.DecodePayload(&p)
 			if p.CallID == "call-1" && p.Outcome == transcript.ToolResultCancelled {
 				hasCancelledResult = true
 			}

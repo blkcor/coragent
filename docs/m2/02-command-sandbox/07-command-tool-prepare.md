@@ -1,7 +1,7 @@
-# S2.6 Command Tool: Prepare + Execution Identity
+# S2.7 Command Tool: Prepare + Execution Identity
 
 **Status:** pending
-**Prerequisite:** [S2.5 accepted](05-policy-engine.md)
+**Prerequisite:** [S2.6 accepted](06-policy-engine.md)
 
 ## Goal
 

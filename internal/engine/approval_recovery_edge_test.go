@@ -31,7 +31,7 @@ func recoverCrashedSession(t *testing.T, sessionID, dir, root string) *engine.Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { w.Close() })
+	t.Cleanup(func() { _ = w.Close() })
 	fs := workspace.NewFileService(w)
 	projector := dataproj.New()
 	broker, err := action.NewBrokerWithProjector(projector, tools.NewCatalog(fs, projector)...)

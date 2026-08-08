@@ -1,7 +1,7 @@
-# S2.7 Command Execution + Output Pipeline
+# S2.8 Command Execution + Output Pipeline
 
 **Status:** pending
-**Prerequisite:** [S2.6 accepted](06-command-tool-prepare.md)
+**Prerequisite:** [S2.7 accepted](07-command-tool-prepare.md)
 
 ## Goal
 
