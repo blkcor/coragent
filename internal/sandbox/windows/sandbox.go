@@ -69,6 +69,7 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 	}
 
 	var ptyMaster *os.File
+	var ptyInput *os.File
 	var stdoutReader, stderrReader io.ReadCloser
 
 	if spec.PTY && s.pty != nil {
@@ -77,10 +78,10 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 			return nil, fmt.Errorf("windows sandbox: pty allocate: %w", err)
 		}
 		ptyMaster = master
+		ptyInput = slave
 		execCmd.Stdin = slave
 		execCmd.Stdout = slave
 		execCmd.Stderr = slave
-		defer func() { _ = slave.Close() }()
 	} else {
 		var err error
 		stdoutReader, err = execCmd.StdoutPipe()
@@ -98,6 +99,9 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 		if ptyMaster != nil {
 			_ = ptyMaster.Close()
 		}
+		if ptyInput != nil {
+			_ = ptyInput.Close()
+		}
 		return nil, err
 	}
 
@@ -105,6 +109,9 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 		_ = windows.CloseHandle(jobObject)
 		if ptyMaster != nil {
 			_ = ptyMaster.Close()
+		}
+		if ptyInput != nil {
+			_ = ptyInput.Close()
 		}
 		return nil, fmt.Errorf("windows sandbox: start %s: %w", spec.Command, err)
 	}
@@ -118,6 +125,9 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 		if ptyMaster != nil {
 			_ = ptyMaster.Close()
 		}
+		if ptyInput != nil {
+			_ = ptyInput.Close()
+		}
 		return nil, fmt.Errorf("windows sandbox: OpenProcess: %w", err)
 	}
 	if err := windows.AssignProcessToJobObject(jobObject, procHandle); err != nil {
@@ -129,6 +139,9 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 		if ptyMaster != nil {
 			_ = ptyMaster.Close()
 		}
+		if ptyInput != nil {
+			_ = ptyInput.Close()
+		}
 		return nil, fmt.Errorf("windows sandbox: AssignProcessToJobObject: %w", err)
 	}
 	_ = windows.CloseHandle(procHandle)
@@ -137,6 +150,7 @@ func (s *Sandbox) startWithExec(ctx context.Context, spec sandbox.CommandSpec) (
 		cmd:       execCmd,
 		spec:      spec,
 		ptyMaster: ptyMaster,
+		ptyInput:  ptyInput,
 		ptyMgr:    s.pty,
 		jobObject: jobObject,
 		doneCh:    make(chan struct{}),
@@ -159,10 +173,10 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 	if err != nil {
 		return nil, fmt.Errorf("windows sandbox: pty allocate: %w", err)
 	}
-	defer func() { _ = slave.Close() }()
 	cleanupPTY := true
 	defer func() {
 		if cleanupPTY {
+			_ = slave.Close()
 			s.pty.closeHPCON(master)
 			_ = master.Close()
 		}
@@ -237,6 +251,7 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 		osProcess: proc,
 		spec:      spec,
 		ptyMaster: master,
+		ptyInput:  slave,
 		ptyMgr:    s.pty,
 		jobObject: jobObject,
 		doneCh:    make(chan struct{}),
@@ -256,6 +271,7 @@ type process struct {
 	osProcess *os.Process // set on CreateProcess path (ConPTY)
 	spec      sandbox.CommandSpec
 	ptyMaster *os.File
+	ptyInput  *os.File
 	ptyMgr    *ptyManager
 	jobObject windows.Handle
 
@@ -349,6 +365,9 @@ func (p *process) readPipes(stdoutPipe, stderrPipe io.ReadCloser) {
 func (p *process) readPTY(ctx context.Context) {
 	defer close(p.doneCh)
 	defer func() {
+		if p.ptyInput != nil {
+			_ = p.ptyInput.Close()
+		}
 		if p.ptyMgr != nil {
 			p.ptyMgr.closeHPCON(p.ptyMaster)
 		}
@@ -375,6 +394,9 @@ func (p *process) readPTY(ctx context.Context) {
 		processState = p.cmd.ProcessState
 	} else if p.osProcess != nil {
 		processState, waitErr = p.osProcess.Wait()
+	}
+	if p.ptyInput != nil {
+		_ = p.ptyInput.Close()
 	}
 	p.ptyMgr.closeHPCON(p.ptyMaster)
 	<-done
