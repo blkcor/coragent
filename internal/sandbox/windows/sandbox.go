@@ -365,17 +365,19 @@ func (p *process) readPTY(ctx context.Context) {
 		readErr = p.ptyMgr.ReadLoop(ctx, p.ptyMaster, &output, p.spec.MaxOutputBytes)
 	}()
 
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
-
-	// Wait for the process on both paths.
+	// ConPTY keeps its output pipe open after the client exits. Read output
+	// concurrently, wait for the client first, then close the pseudoconsole so
+	// the reader observes EOF. Reversing this order deadlocks on the open HPCON.
+	var processState *os.ProcessState
+	var waitErr error
 	if p.cmd != nil {
-		_ = p.cmd.Wait()
+		waitErr = p.cmd.Wait()
+		processState = p.cmd.ProcessState
 	} else if p.osProcess != nil {
-		_, _ = p.osProcess.Wait()
+		processState, waitErr = p.osProcess.Wait()
 	}
+	p.ptyMgr.closeHPCON(p.ptyMaster)
+	<-done
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -387,11 +389,13 @@ func (p *process) readPTY(ctx context.Context) {
 	p.result.Stdout = outputBytes
 	p.result.PID = p.PID()
 
-	if p.cmd != nil && p.cmd.ProcessState != nil {
-		p.result.ExitCode = p.cmd.ProcessState.ExitCode()
+	if processState != nil {
+		p.result.ExitCode = processState.ExitCode()
 	}
 	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, context.Canceled) {
 		p.result.Error = readErr
+	} else if waitErr != nil && !errors.Is(waitErr, context.Canceled) {
+		p.result.Error = waitErr
 	}
 }
 
