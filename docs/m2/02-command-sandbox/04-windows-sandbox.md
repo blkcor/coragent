@@ -1,6 +1,6 @@
 # S2.4 Windows Sandbox: NOP + ConPTY
 
-**Status:** pending
+**Status:** accepted
 **Prerequisite:** [S2.1 accepted](01-sandbox-interface.md)
 
 ## Goal
@@ -51,15 +51,15 @@ Pipe fallback 场景下 `Resize()` 为 no-op（pipe 没有行列概念），`All
 
 ## Acceptance
 
-- [ ] NOP sandbox 可启动基础命令（`cmd /c echo hello`、`powershell -Command Write-Output hello`）
-- [ ] ConPTY 在 Windows >= 1809 上正常分配、I/O、resize
-- [ ] 旧版 Windows (< 1809) 正确降级为 pipe，命令输出可捕获
-- [ ] 版本检测精确到 build number（`RtlGetVersion`），结果缓存
-- [ ] `CreateJobObject` → 子进程被 job 管理，`TerminateJobObject` 终止所有子进程
-- [ ] timeout 后 `TerminateJobObject` 正确终止整个 job
-- [ ] `ConfinementLevel()` 返回 `ConfinementProcess`
-- [ ] PTY I/O 在 ConPTY 和 pipe 两种路径下均正常
-- [ ] 离线测试在非 Windows 平台 skip（build tag: `windows`）
+- [x] NOP sandbox 可启动基础命令（`cmd /c echo hello`、`powershell -Command Write-Output hello`）
+- [x] ConPTY 在 Windows >= 1809 上正常分配、I/O、resize
+- [x] 旧版 Windows (< 1809) 正确降级为 pipe，命令输出可捕获
+- [x] 版本检测精确到 build number（`RtlGetVersion`），结果缓存
+- [x] `CreateJobObject` → 子进程被 job 管理，`TerminateJobObject` 终止所有子进程
+- [x] timeout 后 `TerminateJobObject` 正确终止整个 job
+- [x] `ConfinementLevel()` 返回 `ConfinementProcess`
+- [x] PTY I/O 在 ConPTY 和 pipe 两种路径下均正常
+- [x] 离线测试在非 Windows 平台 skip（build tag: `windows`）
 
 ## Evidence
 

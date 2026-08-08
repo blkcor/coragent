@@ -1,0 +1,37 @@
+name: Windows sandbox
+
+on:
+  pull_request:
+    paths:
+      - "internal/sandbox/**"
+      - ".github/workflows/windows-sandbox.yml"
+      - "go.mod"
+      - "go.sum"
+  push:
+    branches:
+      - "codex/**"
+    paths:
+      - "internal/sandbox/**"
+      - ".github/workflows/windows-sandbox.yml"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Windows sandbox runtime
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify Windows sandbox runtime
+        run: go test -count=1 ./internal/sandbox/windows
+      - name: Detect Windows sandbox races
+        run: go test -count=1 -race ./internal/sandbox/windows
