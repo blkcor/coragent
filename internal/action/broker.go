@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/blkcor/coragent/internal/dataproj"
+	"github.com/blkcor/coragent/internal/policy"
 	"github.com/blkcor/coragent/internal/provider"
 	"github.com/blkcor/coragent/internal/transcript"
 )
@@ -18,8 +19,9 @@ import (
 type Effect string
 
 const (
-	EffectRead  Effect = "read"
-	EffectWrite Effect = "write"
+	EffectRead    Effect = "read"
+	EffectWrite   Effect = "write"
+	EffectProcess Effect = "process"
 )
 
 // Prepared is a validated, side-effect-free effective action.
@@ -28,8 +30,16 @@ type Prepared struct {
 	Arguments json.RawMessage
 	Effects   []Effect
 	Paths     []string
+	// Effect is the command classification. It is EffectUnknown for non-command
+	// actions.
+	Effect policy.EffectClassification
 	// Patch is set by the patch tool's Prepare. Nil for all other tools.
 	Patch *PreparedPatch
+	// Command is set by the command tool's Prepare. Nil for all other tools.
+	Command *PreparedCommand
+	// Denied marks a terminal policy decision produced during preparation.
+	Denied     bool
+	DenyReason string
 }
 
 type Execution struct {
@@ -132,6 +142,12 @@ func (b *Broker) SkippedResult(callID string) transcript.ToolResultPayload {
 // NeedsApproval returns true when the prepared action requires user approval
 // before execution may proceed.
 func (p Prepared) NeedsApproval() bool {
+	if p.Denied {
+		return false
+	}
+	if p.Command != nil {
+		return p.Command.Decision.Kind == policy.PolicyApprove
+	}
 	for _, e := range p.Effects {
 		if e == EffectWrite {
 			return true
