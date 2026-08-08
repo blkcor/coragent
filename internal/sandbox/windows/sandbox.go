@@ -210,9 +210,12 @@ func (s *Sandbox) startWithConPTY(ctx context.Context, spec sandbox.CommandSpec)
 		}
 	}
 
+	// Null standard handles prevent the client from retaining the host's
+	// console handles; ConPTY supplies its console through the attribute list.
 	startupInfo := windows.StartupInfoEx{
 		StartupInfo: windows.StartupInfo{
-			Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
+			Cb:    uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
+			Flags: windows.STARTF_USESTDHANDLES,
 		},
 		ProcThreadAttributeList: attr.List(),
 	}

@@ -271,8 +271,8 @@ func TestConPTYResize(t *testing.T) {
 	s := New(NewPTYManager())
 
 	proc, err := s.Start(ctx, sandbox.CommandSpec{
-		Command:        "cmd",
-		Args:           []string{"/c", "timeout 2"},
+		Command:        os.Getenv("SystemRoot") + `\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		Args:           []string{"-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 2"},
 		Env:            []string{"SystemRoot=" + os.Getenv("SystemRoot")},
 		Timeout:        5 * time.Second,
 		MaxOutputBytes: 64 * 1024,
@@ -351,8 +351,8 @@ func TestConPTYTimeout(t *testing.T) {
 	s := New(NewPTYManager())
 
 	proc, err := s.Start(ctx, sandbox.CommandSpec{
-		Command:        "cmd",
-		Args:           []string{"/c", "timeout 60"},
+		Command:        os.Getenv("SystemRoot") + `\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		Args:           []string{"-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"},
 		Env:            []string{"SystemRoot=" + os.Getenv("SystemRoot")},
 		Timeout:        500 * time.Millisecond,
 		MaxOutputBytes: 64 * 1024,
